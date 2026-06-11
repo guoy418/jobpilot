@@ -1,0 +1,13 @@
+---
+description: Keep interview review AI pipeline modular and explicit
+globs: server/interviewReview/**/*.mjs,server/aiProvider.mjs,server/parser.mjs,server/check.mjs,docs/interview-review-pipeline.md
+alwaysApply: false
+---
+
+# Interview Review Pipeline
+
+- Keep raw interview transcript review in `server/interviewReview/`; do not scatter prompt, chunk, merge, or schema logic into unrelated files.
+- `InterviewReviewJSON v1` is a local import path. It must bypass LLM calls and only normalize schema.
+- Raw transcripts must not silently fall back to regex Q/A rules. If AI is unavailable or returns no valid reviewed Q/A, return an explicit failed status with empty `qaPairs`.
+- Chunk boundaries should prefer speaker/question turns and use overlap; merge logic owns deduplication across overlap.
+- When changing the AI contract, update `docs/interview-review-pipeline.md` and add/adjust coverage in `server/check.mjs`.

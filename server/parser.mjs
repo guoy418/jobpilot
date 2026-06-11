@@ -1,3 +1,5 @@
+import { parseInterviewReviewJsonText } from "./interviewReview/schema.mjs";
+
 const knownCompanies = ["字节跳动", "腾讯", "阿里云", "阿里", "小红书", "美团", "百度", "快手", "京东", "网易", "拼多多"];
 const knownCities = ["上海", "北京", "杭州", "深圳", "广州", "成都", "南京"];
 
@@ -52,6 +54,8 @@ const sourceTextFrom = (payload) => {
     parseText: `${rawText} ${fileBaseName(fileName)}`.trim(),
   };
 };
+
+const textField = (value) => String(value ?? "").trim();
 
 const cleanTranscriptLine = (line = "") => String(line).replace(/^\s*[-*•]\s*/, "").trim();
 
@@ -182,6 +186,16 @@ export const parseOpportunityDraft = (payload) => {
 
 export const parseInterviewDraft = (payload) => {
   const { rawText, fileName, parseText } = sourceTextFrom(payload);
+  const importedReview = parseInterviewReviewJsonText(rawText);
+  if (importedReview) {
+    return {
+      ...importedReview,
+      company: importedReview.company || payload.company || "待填写公司",
+      role: importedReview.role || payload.role || "待确认岗位",
+      round: importedReview.round || payload.round || "一面",
+      fileName: fileName || payload.fileName || "interview-review.json",
+    };
+  }
   const sourceKind = payload.sourceKind || "transcript";
   const isAudio = sourceKind === "audio" || /\.(m4a|mp3|wav|aac|ogg)$/i.test(fileName);
   const transcript =
@@ -197,7 +211,7 @@ export const parseInterviewDraft = (payload) => {
     date: payload.date || "Today",
     fileName: fileName || payload.fileName || "interview-transcript.md",
     sourceText: transcript,
-    qaPairs: rawText ? parseTranscriptQaPairs(rawText) : [],
+    qaPairs: [],
     note: payload.note || "",
     extractionStatus: payload.extractionStatus || "",
     extractionError: payload.extractionError || "",

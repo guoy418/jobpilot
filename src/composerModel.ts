@@ -1,5 +1,20 @@
 import type { ComposerSourceKind, ModuleComposer, ModuleComposerDraft, ModuleComposerSource, QaPair } from "./types";
 
+export type InterviewReviewJsonParseResult =
+  | {
+      ok: true;
+      review: {
+        company: string;
+        role: string;
+        round: string;
+        date: string;
+        sourceText: string;
+        note: string;
+        qaPairs: Array<Omit<QaPair, "id">>;
+      };
+    }
+  | { ok: false; error: string };
+
 export const createModuleComposerSource = (sourceKind: ComposerSourceKind = "manual"): ModuleComposerSource => ({
   fileName: "",
   sourceKind,
@@ -13,7 +28,7 @@ export const inferComposerSourceKind = (fileName: string, fallback: ModuleCompos
   if (lowerName.startsWith("http")) return "job-link";
   if (/\.(png|jpg|jpeg|webp|gif)$/i.test(lowerName)) return "screenshot";
   if (/\.(m4a|mp3|wav|aac|ogg)$/i.test(lowerName)) return "audio";
-  if (/\.(txt|md|docx)$/i.test(lowerName)) return fallback === "interview" ? "transcript" : "jd-text";
+  if (/\.(txt|md|json|docx)$/i.test(lowerName)) return fallback === "interview" ? "transcript" : "jd-text";
   if (/\.(pdf|docx)$/i.test(lowerName)) return fallback === "resume" ? "resume-file" : "jd-text";
   if (fallback === "resume") return "resume-file";
   if (fallback === "interview") return "transcript";
@@ -42,6 +57,78 @@ export const detectCity = (text: string) => {
 export const detectRoleTitle = (text: string, fallback = "") => {
   const titleMatch = text.match(/([\u4e00-\u9fa5A-Za-z]*(?:前端|产品|数据|运营|算法|后端|全栈|增长)[\u4e00-\u9fa5A-Za-z]*(?:实习生|工程师|经理|岗位|开发)?)/);
   return titleMatch?.[1]?.slice(0, 18) || fallback || "待确认岗位";
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const textField = (value: unknown) => String(value ?? "").trim();
+
+const numberField = (value: unknown, fallback: number) => {
+  const score = Number(value);
+  return Number.isFinite(score) ? Math.min(5, Math.max(1, Math.round(score))) : fallback;
+};
+
+const booleanField = (value: unknown, fallback: boolean) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (/^(true|yes|1|weak|需要|薄弱)$/i.test(value.trim())) return true;
+    if (/^(false|no|0|done|可复用|已处理)$/i.test(value.trim())) return false;
+  }
+  return fallback;
+};
+
+const normalizeInterviewReviewPair = (item: unknown): Omit<QaPair, "id"> | null => {
+  const source = asRecord(item);
+  if (!source) return null;
+  const question = textField(source.question);
+  if (!question) return null;
+  return {
+    question,
+    originalAnswer: textField(source.originalAnswer) || "待补充原回答。",
+    type: textField(source.questionType) || textField(source.type) || "BEHAVIORAL",
+    score: numberField(source.score, textField(source.evaluation) || textField(source.critique) ? 3 : 2),
+    critique: textField(source.evaluation) || textField(source.critique) || "建议补充更具体的例子、指标和复盘。",
+    weak: booleanField(source.weak, true),
+    framework: textField(source.improvedFramework) || textField(source.framework) || "情境 -> 任务 -> 行动 -> 结果 -> 复盘",
+    optimizedAnswer: textField(source.polishedAnswer) || textField(source.optimizedAnswer) || "按推荐框架重写回答。",
+  };
+};
+
+export const parseInterviewReviewJson = (input: string): InterviewReviewJsonParseResult => {
+  const text = input.trim();
+  if (!text.startsWith("{")) return { ok: false, error: "未检测到 InterviewReviewJSON v1：内容需要以 JSON 对象开头。" };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return { ok: false, error: `JSON 无法解析：${error instanceof Error ? error.message : "请检查逗号、引号和括号"}` };
+  }
+
+  const root = asRecord(parsed);
+  if (!root) return { ok: false, error: "JSON 根节点必须是对象。" };
+  const version = textField(root.schemaVersion || root.version);
+  if (version && version !== "InterviewReviewJSON v1" && version !== "v1" && version !== "1") {
+    return { ok: false, error: `不支持的 schemaVersion：${version}。当前支持 InterviewReviewJSON v1。` };
+  }
+
+  const rawPairs = Array.isArray(root.qaPairs) ? root.qaPairs : Array.isArray(root.questions) ? root.questions : [];
+  const qaPairs = rawPairs.map(normalizeInterviewReviewPair).filter((item): item is Omit<QaPair, "id"> => Boolean(item));
+  if (!qaPairs.length) return { ok: false, error: "JSON 里没有有效 qaPairs。每题至少需要 question 字段。" };
+
+  return {
+    ok: true,
+    review: {
+      company: textField(root.company),
+      role: textField(root.role),
+      round: textField(root.round),
+      date: textField(root.date) || "Today",
+      sourceText: textField(root.sourceText) || text,
+      note: textField(root.note) || "由 InterviewReviewJSON v1 导入，可继续编辑后再生成答案卡。",
+      qaPairs,
+    },
+  };
 };
 
 export type ParsedTranscriptQa = Omit<QaPair, "id">;

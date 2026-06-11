@@ -76,7 +76,7 @@ export const selectTodayActions = (
   resumeList: ResumeVersion[],
 ): TodayAction[] => {
   const opportunityActionItems: TodayAction[] = opportunities
-    .filter((item) => item.status !== "OFFER")
+    .filter((item) => item.status === "TO APPLY" || item.status === "WRITTEN TEST" || item.status === "INTERVIEWING")
     .map((item) => ({
       level: computeOpportunityAction(item),
       title:
@@ -107,7 +107,7 @@ export const selectTodayActions = (
     }));
 
   const weeklyActionItems: TodayAction[] = weeklyPlan.tasks
-    .filter((task) => task.status === "open")
+    .filter((task) => task.status === "open" && task.source !== "opportunity")
     .map((task) => ({
       level: task.level ?? "P2",
       title: task.title,

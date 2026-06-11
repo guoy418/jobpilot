@@ -366,11 +366,10 @@ export const baseWeeklyPlan: WeeklyPlan = {
   tasks: [
     {
       id: "WT-101",
-      title: "补齐字节岗位投递材料",
+      title: "整理一版前端项目表达",
       detail: "来自本周重点：前端实习 / 上海优先",
-      source: "opportunity",
-      sourceLabel: "岗位管理",
-      relatedEntityId: "OP-021",
+      source: "manual",
+      sourceLabel: "自主训练",
       level: "P1",
       status: "open",
     },

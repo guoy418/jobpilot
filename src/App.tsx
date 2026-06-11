@@ -23,10 +23,10 @@ import {
   Sparkles,
   Sun,
   Upload,
+  X,
 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
-  buildOpportunityPipeline,
   computeOpportunityAction,
   formatNow,
   getOpportunityDueDate,
@@ -47,6 +47,7 @@ import {
   detectRoleTitle,
   fileBaseName,
   inferComposerSourceKind,
+  parseInterviewReviewJson,
   parseTranscriptQaPairs,
 } from "./composerModel";
 import {
@@ -66,6 +67,7 @@ import {
   exportBackupApi,
   getApiHealthApi,
   getDashboardSummaryApi,
+  getOpportunitiesApi,
   getTodayActionsApi,
   getWeeklyPlanApi,
   importBackupApi,
@@ -99,7 +101,6 @@ import type {
   Opportunity,
   OpportunityStatus,
   Page,
-  PipelineStage,
   QaPair,
   ResumeVersion,
   SessionFile,
@@ -116,14 +117,52 @@ const navItems: Array<{ id: Page; label: string; icon: typeof Home }> = [
   { id: "answers", label: "答案库", icon: Library },
   { id: "resumes", label: "简历版本", icon: FileText },
   { id: "weekly", label: "训练计划", icon: CalendarClock },
-  { id: "exports", label: "设置导出", icon: FileDown },
+  { id: "exports", label: "设置备份", icon: FileDown },
 ];
 
+const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根据我提供的面试录音转写稿，整理成一份可以直接导入 JobPilot 的结构化面试复盘。
+
+请严格遵守：
+1. 只输出 JSON，不要 markdown，不要代码块，不要解释。
+2. 不要编造没有出现过的问题；如果原回答很短，可以如实保留并在评价里指出不足。
+3. 每个问题都要包含：原问题、我的原回答、评价、优化回答框架、可背诵的优化回答。
+4. 如果有追问，请先按独立题目扁平输出；可在 question 里写清楚“追问：...”。
+5. polishedAnswer 用第一人称中文书面口语，适合我复述，尽量包含背景、动作、结果、反思。
+
+输出格式必须是这个 JSON 结构：
+{
+  "schemaVersion": "InterviewReviewJSON v1",
+  "company": "",
+  "role": "",
+  "round": "",
+  "date": "Today",
+  "qaPairs": [
+    {
+      "question": "",
+      "originalAnswer": "",
+      "evaluation": "",
+      "improvedFramework": "",
+      "polishedAnswer": "",
+      "questionType": "BEHAVIORAL"
+    }
+  ],
+  "note": ""
+}
+
+字段说明：
+- company / role / round / date：能从转写稿判断就填写，不确定就留空或写 Today。
+- question：面试官原问题，尽量还原真实问法。
+- originalAnswer：我的原回答，不要改写成更好的版本。
+- evaluation：具体指出原回答哪里弱、缺什么信息、应该怎么补。
+- improvedFramework：这题以后应该按什么结构回答。
+- polishedAnswer：基于原回答和合理补充，写出优化后的可背诵版本。
+- questionType：可选 BEHAVIORAL / PROJECT / TECHNICAL / MOTIVATION / PRODUCT。`;
+
 const flowPipelineSteps = [
-  { title: "模块内新增", hint: "上传或粘贴原始材料" },
-  { title: "补齐必填", hint: "确认解析与关键字段" },
-  { title: "写入模块", hint: "岗位 / 面试 / 答案 / 简历" },
-  { title: "今日待办", hint: "从正式记录自动汇总" },
+  { title: "添加资料", hint: "把岗位、面试或简历放进来" },
+  { title: "整理内容", hint: "检查信息是否准确" },
+  { title: "开始跟进", hint: "保存到对应模块" },
+  { title: "安排今天", hint: "把要做的事放到待办里" },
 ] as const;
 
 type ApiDashboardSummary = Partial<DashboardSummary> & {
@@ -156,6 +195,7 @@ type AiSettings = {
   endpoint: string;
   notes: string;
 };
+type InterviewInputMode = "review-json" | "raw-transcript";
 
 const aiSettingsStorageKey = "jobpilot.aiSettings.v1";
 const dismissedTodayStorageKey = "jobpilot.dismissedToday.v1";
@@ -178,15 +218,8 @@ const todayActionSourceLabel = (action: TodayAction) => {
   if (action.source === "opportunity") return "岗位";
   if (action.source === "interview") return "面试";
   if (action.source === "answer") return "答案";
-  if (action.source === "weekly") return action.page === "weekly" ? "训练" : "训练关联";
+  if (action.source === "weekly") return "训练";
   return "待办";
-};
-
-const trainingTaskRouteLabel = (task: WeeklyTask) => {
-  if (task.source === "opportunity" && task.relatedEntityId) return "今日待办点击后打开：岗位详情";
-  if (task.source === "interview" && task.relatedEntityId) return "今日待办点击后打开：面试复盘";
-  if (task.source === "answer" && task.relatedEntityId) return "今日待办点击后打开：答案库";
-  return "今日待办点击后打开：训练计划";
 };
 
 const pageShowsTopSearch = (currentPage: Page) => currentPage === "opportunities" || currentPage === "interviews" || currentPage === "answers";
@@ -194,7 +227,28 @@ const pageShowsTopSearch = (currentPage: Page) => currentPage === "opportunities
 const topSearchPlaceholder = (currentPage: Page) => {
   if (currentPage === "interviews") return "搜索公司、岗位、轮次";
   if (currentPage === "answers") return "搜索问题、回答、来源、适用岗位";
-  return "搜索岗位、公司、下一步动作";
+  return "搜索岗位、公司、备注";
+};
+
+const opportunityFilterLabel = (value: string) => {
+  const labels: Record<string, string> = {
+    ALL: "全部",
+    P0: "今天要处理",
+    P1: "优先推进",
+    "A PRIORITY": "高意愿",
+    "HIGH MATCH": "高匹配",
+    "DUE SOON": "快截止",
+  };
+  return labels[value] ?? value;
+};
+
+const completedOpportunityStatus = (status: OpportunityStatus): OpportunityStatus | null => {
+  if (status === "TO APPLY") return "APPLIED";
+  if (status === "APPLIED") return "WRITTEN TEST";
+  if (status === "WRITTEN TEST") return "INTERVIEWING";
+  if (status === "INTERVIEWING") return "WAITING";
+  if (status === "WAITING") return "OFFER";
+  return null;
 };
 
 const getInterviewTranscriptText = (session: InterviewSession) => {
@@ -228,25 +282,26 @@ const extractionStatusLabel = (status?: string) => {
   if (!status) return "";
   const labels: Record<string, string> = {
     "local-text": "已读取文本文件",
-    "local-pdf-text": "已提取 PDF 文字",
-    "local-docx-text": "已提取 DOCX 文字",
-    "ai-ocr": "已完成 OCR",
+    "local-pdf-text": "已读取 PDF 内容",
+    "local-docx-text": "已读取文档内容",
+    "ai-ocr": "已识别图片文字",
     "ai-transcription": "已完成录音转写",
-    "ai-not-configured": "Assist 未配置服务商/API Key",
+    "interview-json": "已导入复盘内容",
+    "ai-not-configured": "请先完成智能整理设置",
     "stored-file-missing": "找不到已上传文件，请重新上传",
-    "empty-pdf-text": "PDF 没有可提取文字，扫描件需要开启 OCR",
-    "empty-docx-text": "DOCX 没有可提取文字，请检查文件内容",
-    "ocr-unavailable": "截图/图片需要开启 Assist 并配置视觉模型",
-    "empty-ocr-text": "OCR 未识别出文字，请换更清晰截图",
-    "ocr-provider-failed": "OCR 服务调用失败，请检查模型、Key 或 endpoint",
-    "transcription-unavailable": "录音需要开启转写 Assist 并配置可用 API",
-    "empty-transcription-text": "转写服务没有返回文字，请检查音频内容",
-    "transcription-provider-failed": "转写服务调用失败，请检查 Key、endpoint 或音频格式",
+    "empty-pdf-text": "PDF 里没有读到文字，请换文件或粘贴文字",
+    "empty-docx-text": "文档里没有读到文字，请检查文件内容",
+    "ocr-unavailable": "图片识别需要先开启智能整理",
+    "empty-ocr-text": "没有识别出文字，请换更清晰的截图",
+    "ocr-provider-failed": "图片识别失败，请检查设置后重试",
+    "transcription-unavailable": "录音转文字需要先开启",
+    "empty-transcription-text": "没有转写出文字，请检查录音内容",
+    "transcription-provider-failed": "录音转文字失败，请检查设置或音频格式",
     "transcription-provider-unsupported": "当前服务商不支持录音转写，请用 OpenAI 或兼容接口",
-    "ai-review": "已完成 AI 面试复盘",
-    "ai-parser-failed": "AI 面试复盘调用失败",
-    "ai-parser-invalid-json": "AI 没有返回可解析的 JSON",
-    "ai-review-empty": "AI 没有返回有效的问题复盘",
+    "ai-review": "已整理面试复盘",
+    "ai-parser-failed": "面试复盘整理失败",
+    "ai-parser-invalid-json": "整理结果格式不对，请重试",
+    "ai-review-empty": "没有整理出有效问题",
     "unsupported-file-type": "当前文件类型不能自动读取",
     "file-extraction-failed": "文件提取失败，请换文件或粘贴文字",
   };
@@ -265,33 +320,33 @@ const shouldSendAiSettings = (settings: AiSettings, sourceKind: ModuleComposerSo
 
 const composerAssistRequirement = (composer: ModuleComposer, sourceKind: ModuleComposerSource["sourceKind"], settings: AiSettings) => {
   if (composer === "interview" && sourceKind === "audio" && settings.transcriptionMode !== "assist") {
-    return "录音需要先开启「录音转写 → Assist」";
+    return "录音需要先在设置里开启「录音转文字」";
   }
   if (sourceKind === "screenshot" && settings.parseMode !== "assist") {
-    return "截图需要先开启「文字 / JD / 简历解析 → Assist：OCR + AI 结构化解析」";
+    return "截图识别需要先在设置里开启「智能整理」";
   }
   if ((sourceKind === "screenshot" || (composer === "interview" && sourceKind === "audio")) && !isAiProviderConfigured(settings)) {
-    return "请先在设置里选择服务商（OpenAI / Anthropic / 自定义）并填写 API Key";
+    return "请先在设置里完成智能整理配置";
   }
   if (composer === "interview" && sourceKind === "audio" && settings.provider === "anthropic") {
     return "录音转写目前不支持 Anthropic，请改用 OpenAI 或自定义 OpenAI 兼容接口";
   }
   if (sourceKind === "screenshot" && settings.provider === "custom" && /api\.example\.com/i.test(settings.endpoint)) {
-    return "自定义 endpoint 还是示例地址 https://api.example.com/v1，请改成真实 API 地址";
+    return "服务地址还是示例地址，请换成真实地址";
   }
   if (sourceKind === "screenshot" && settings.provider === "custom" && settings.endpoint.includes("deepseek.com")) {
-    return "DeepSeek 普通 chat API 不支持截图 OCR。截图请改用 OpenAI/Anthropic 视觉模型，或先把 JD 文字粘贴到文本框";
+    return "当前服务不能直接识别截图，请改用支持图片识别的服务，或直接粘贴文字";
   }
   return "";
 };
 
 const uploadStatusLabel = (source: ModuleComposerSource) => {
-  if (source.rawText.trim()) return "已读取文字，可解析";
+  if (source.rawText.trim()) return "已读取文字，可以继续";
   if (source.uploadStatus === "reading") return "正在读取文本文件...";
-  if (source.uploadStatus === "uploading") return "正在保存到本地 API...";
-  if (source.uploadStatus === "stored") return "文件已保存，点击开始解析";
-  if (source.uploadStatus === "failed") return "文件保存失败，PDF/DOCX/OCR/录音解析不可用";
-  if (source.uploadStatus === "local-only") return "文件只在浏览器中，PDF/DOCX/OCR/录音解析不可用";
+  if (source.uploadStatus === "uploading") return "正在保存文件...";
+  if (source.uploadStatus === "stored") return "文件已准备好";
+  if (source.uploadStatus === "failed") return "文件保存失败，请重新选择或粘贴文字";
+  if (source.uploadStatus === "local-only") return "文件已选择；如无法读取，请直接粘贴文字";
   if (source.fileName) return "文件已选择";
   return "未选择文件";
 };
@@ -308,23 +363,27 @@ const normalizeParsedQaPairs = (items: unknown): Array<Omit<QaPair, "id">> => {
   return items
     .map((item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-      const source = item as Partial<QaPair>;
+      const source = item as Partial<QaPair> & {
+        evaluation?: unknown;
+        improvedFramework?: unknown;
+        polishedAnswer?: unknown;
+        questionType?: unknown;
+      };
       const question = String(source.question ?? "").trim();
       if (!question) return null;
       const score = Number(source.score);
       return {
         question,
         originalAnswer: String(source.originalAnswer ?? "").trim() || "待补充原回答。",
-        type: String(source.type ?? "").trim() || "BEHAVIORAL",
+        type: String(source.questionType ?? source.type ?? "").trim() || "BEHAVIORAL",
         score: Number.isFinite(score) ? Math.min(5, Math.max(1, Math.round(score))) : 2,
-        critique: String(source.critique ?? "").trim() || "建议补充更具体的例子、指标和复盘。",
+        critique: String(source.evaluation ?? source.critique ?? "").trim() || "建议补充更具体的例子、指标和复盘。",
         weak: typeof source.weak === "boolean" ? source.weak : true,
-        framework: String(source.framework ?? "").trim() || "情境 -> 任务 -> 行动 -> 结果 -> 复盘",
-        optimizedAnswer: String(source.optimizedAnswer ?? "").trim() || "按推荐框架重写回答。",
+        framework: String(source.improvedFramework ?? source.framework ?? "").trim() || "情境 -> 任务 -> 行动 -> 结果 -> 复盘",
+        optimizedAnswer: String(source.polishedAnswer ?? source.optimizedAnswer ?? "").trim() || "按推荐框架重写回答。",
       };
     })
-    .filter((item): item is Omit<QaPair, "id"> => Boolean(item))
-    .slice(0, 12);
+    .filter((item): item is Omit<QaPair, "id"> => Boolean(item));
 };
 
 const loadDismissedTodayIds = () => {
@@ -391,8 +450,11 @@ function App() {
   const [selectedQaId, setSelectedQaId] = useState(seedInterviewSessions[0].qaPairs[0].id);
   const [query, setQuery] = useState("");
   const [interviewPage, setInterviewPage] = useState(0);
+  const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
+  const [answerView, setAnswerView] = useState<"list" | "detail">("list");
+  const [weeklyEditingTaskId, setWeeklyEditingTaskId] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
-  const [systemMessage, setSystemMessage] = useState("[READY]");
+  const [systemMessage, setSystemMessage] = useState("准备好了");
   const [apiMode, setApiMode] = useState<ApiModeState>(() =>
     isPublicDemo ? { status: "demo" } : isApiEnabled ? { status: "checking" } : { status: "mock" },
   );
@@ -412,6 +474,7 @@ function App() {
   const [composerStep, setComposerStep] = useState<ComposerStep>("source");
   const [composerSource, setComposerSource] = useState<ModuleComposerSource>(() => createModuleComposerSource());
   const [composerParsedQaPairs, setComposerParsedQaPairs] = useState<Array<Omit<QaPair, "id">>>([]);
+  const [interviewInputMode, setInterviewInputMode] = useState<InterviewInputMode>("review-json");
   const [composerParseNotice, setComposerParseNotice] = useState("");
   const [composerParsing, setComposerParsing] = useState(false);
   const [interviewReparseBusy, setInterviewReparseBusy] = useState(false);
@@ -435,15 +498,15 @@ function App() {
       .then((health) => {
         if (health.ok) {
           markApiOnline(health);
-          setSystemMessage("[API ONLINE]");
+          setSystemMessage("已连接");
         } else {
           setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
-          setSystemMessage("[API UNHEALTHY]");
+          setSystemMessage("连接异常");
         }
       })
       .catch(() => {
         setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
-        setSystemMessage("[API OFFLINE]");
+        setSystemMessage("暂时离线");
       });
   };
 
@@ -466,7 +529,7 @@ function App() {
 
   useEffect(() => {
     if (!isApiEnabled) {
-      setSystemMessage(isPublicDemo ? "[PUBLIC DEMO]" : "[LOCAL MOCK]");
+      setSystemMessage(isPublicDemo ? "演示模式" : "使用本机数据");
       setApiMode(isPublicDemo ? { status: "demo" } : { status: "mock" });
       return;
     }
@@ -477,12 +540,12 @@ function App() {
         if (cancelled) return;
         markApiOnline(health);
         applyLoadedData(data);
-        setSystemMessage("[API HYDRATED]");
+        setSystemMessage("数据已加载");
       })
       .catch(() => {
         if (!cancelled) {
           setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
-          setSystemMessage("[LOCAL MOCK]");
+          setSystemMessage("使用本机数据");
         }
       });
     return () => {
@@ -524,7 +587,7 @@ function App() {
     if (!isApiEnabled) return;
     void getWeeklyPlanApi()
       .then(setWeeklyPlan)
-      .catch(() => setSystemMessage("[WEEKLY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("训练计划已保存在本机"));
   };
 
   const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities[0];
@@ -564,6 +627,26 @@ function App() {
       }),
     [answerCards, normalizedQuery],
   );
+  const weeklyTaskGroups = useMemo(
+    () =>
+      [
+        {
+          id: "interview",
+          title: "面试复盘",
+          detail: "来自面试问题和答案卡，适合练表达、补框架。",
+          examples: ["重讲一个薄弱项目题", "把答案卡练到能自然复述"],
+          tasks: weeklyPlan.tasks.filter((task) => task.source === "interview" || task.source === "answer"),
+        },
+        {
+          id: "practice",
+          title: "自主训练",
+          detail: "放笔试、作品集、英语和材料整理。",
+          examples: ["练一道笔试题", "整理一版项目表达"],
+          tasks: weeklyPlan.tasks.filter((task) => task.source === "manual" || task.source === "weekly-focus"),
+        },
+      ],
+    [weeklyPlan.tasks],
+  );
 
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
@@ -584,8 +667,6 @@ function App() {
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
     : [];
-  const selectedOpportunitySessions = interviewSessions.filter((session) => session.opportunityId === selectedOpportunity?.id);
-  const selectedOpportunityPipeline = selectedOpportunity ? buildOpportunityPipeline(selectedOpportunity, selectedOpportunitySessions) : [];
   const selectedOpportunityAction = selectedOpportunity ? computeOpportunityAction(selectedOpportunity) : "P2";
 
   const goTo = (nextPage: Page) => {
@@ -596,7 +677,8 @@ function App() {
   const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") => {
     setComposer(kind);
     setComposerStep(kind === "answer" ? "review" : "source");
-    setComposerSource(createModuleComposerSource(kind === "resume" ? "resume-file" : kind === "interview" ? "audio" : kind === "opportunity" ? "jd-text" : "manual"));
+    setInterviewInputMode("review-json");
+    setComposerSource(createModuleComposerSource(kind === "resume" ? "resume-file" : kind === "interview" ? "transcript" : kind === "opportunity" ? "jd-text" : "manual"));
     setComposerParsedQaPairs([]);
     setComposerParseNotice("");
     setComposerParsing(false);
@@ -632,19 +714,19 @@ function App() {
       fileSize: `${Math.max(1, Math.round(file.size / 1024))} KB`,
     }));
     setComposerParseNotice("");
-    setSystemMessage("[SOURCE SELECTED]");
+    setSystemMessage("已选择材料");
 
-    if (/\.(txt|md)$/i.test(file.name)) {
-      setSystemMessage("[READING TEXT FILE]");
+    if (/\.(txt|md|json)$/i.test(file.name)) {
+      setSystemMessage("正在读取文件");
       setComposerSource((source) => ({ ...source, uploadStatus: "reading" }));
       void file.text()
         .then((text) => {
           setComposerSource((source) => ({ ...source, rawText: text, uploadStatus: isApiEnabled ? source.uploadStatus : "stored" }));
-          setSystemMessage("[TEXT FILE LOADED]");
+          setSystemMessage("文件已读取");
         })
         .catch(() => {
           setComposerSource((source) => ({ ...source, uploadStatus: "failed" }));
-          setSystemMessage("[TEXT FILE READ FAILED]");
+          setSystemMessage("文件读取失败");
         });
     }
 
@@ -657,11 +739,11 @@ function App() {
             fileSize: storedFile.fileSize,
             uploadStatus: "stored",
           }));
-          setSystemMessage("[FILE STORED]");
+          setSystemMessage("文件已保存");
         })
         .catch(() => {
           setComposerSource((source) => ({ ...source, uploadStatus: "local-only" }));
-          setSystemMessage("[FILE LOCAL ONLY]");
+          setSystemMessage("文件已选择");
         });
     }
   };
@@ -671,13 +753,17 @@ function App() {
     const rawText = composerSource.rawText.trim();
     const fileName = composerSource.fileName.trim();
     if (composer !== "answer" && !rawText && !fileName) {
-      setComposerParseNotice("请先上传文件，或粘贴文字内容。");
-      setSystemMessage("[SELECT SOURCE FIRST]");
+      setComposerParseNotice(
+        composer === "interview" && interviewInputMode === "review-json"
+          ? "请粘贴或上传已经整理好的复盘文档。"
+          : "请先上传文件，或粘贴文字内容。",
+      );
+      setSystemMessage("请先选择材料");
       return;
     }
     if (composer !== "answer" && fileName && !rawText && isApiEnabled && !composerSource.storageUri) {
-      setComposerParseNotice("文件还在保存到本地 API，请稍等几秒后再点「开始解析」。");
-      setSystemMessage("[WAIT FOR FILE STORE]");
+      setComposerParseNotice("文件还在保存，请稍等几秒后再继续。");
+      setSystemMessage("请稍等文件保存");
       return;
     }
 
@@ -688,13 +774,45 @@ function App() {
         extractionStatus: composerSource.sourceKind === "audio" ? "transcription-unavailable" : "ocr-unavailable",
       }));
       setComposerParseNotice(assistRequirement);
-      setSystemMessage("[ASSIST REQUIRED]");
+      setSystemMessage("需要先完成设置");
       return;
     }
 
     const parseText = `${rawText} ${fileBaseName(fileName)}`.trim();
     const defaultResumeId = composerDraft.resumeId || resumeList[0]?.id || "";
     const linkedOpportunity = opportunities.find((item) => item.id === composerDraft.linkedOpportunityId);
+
+    if (composer === "interview" && rawText.startsWith("{")) {
+      const imported = parseInterviewReviewJson(rawText);
+      if (!imported.ok) {
+        setComposerParseNotice(imported.error);
+        setSystemMessage("复盘内容格式不对");
+        return;
+      }
+      setComposerParsedQaPairs(imported.review.qaPairs);
+      setComposerSource((source) => ({ ...source, extractionStatus: "interview-json" }));
+      setComposerDraft((draft) => ({
+        ...draft,
+        linkedOpportunityId: draft.linkedOpportunityId,
+        company: imported.review.company || linkedOpportunity?.company || draft.company || "待填写公司",
+        role: imported.review.role || linkedOpportunity?.title || draft.role || "待填写岗位",
+        round: imported.review.round || draft.round || "一面",
+        date: imported.review.date || draft.date || "Today",
+        fileName: fileName || draft.fileName || "interview-review.json",
+        sourceText: imported.review.sourceText,
+        nextAction: imported.review.note,
+      }));
+      setComposerStep("review");
+      setComposerParseNotice("");
+      setSystemMessage("复盘内容已导入");
+      return;
+    }
+
+    if (composer === "interview" && interviewInputMode === "review-json") {
+      setComposerParseNotice("请粘贴已经整理好的复盘文档。它应该包含原问题、原回答、评价、优化框架和优化回答；如果你只有原始转写稿，请切换到「帮我整理文字稿」。");
+      setSystemMessage("请粘贴整理好的复盘内容");
+      return;
+    }
 
     const applyLocalParse = () => {
       setComposerParsedQaPairs([]);
@@ -704,8 +822,8 @@ function App() {
       const parsedSourceText =
         rawText ||
         (composerSource.sourceKind === "screenshot"
-          ? `截图文件：${fileName}。文件已保存；开启 Assist 后会通过本地 API 调用视觉 OCR 提取 JD。`
-          : `上传文件：${fileName}。文件已保存；本地 API 可读取 txt/md/PDF/DOCX 文本，图片需开启 Assist OCR。`);
+          ? `截图文件：${fileName}。文件已保存；开启智能整理后可以识别图片文字。`
+          : `上传文件：${fileName}。文件已保存；如果没有读到内容，可以直接粘贴文字。`);
       const parsedDeadline = parseText.includes("今晚") ? "Tonight" : parseText.includes("明天") ? "Tomorrow" : composerDraft.deadline;
       const parsedDueDate = inferDueDateFromText(parsedDeadline);
       const parsedPriority = parseText.includes("内推") || parseText.includes("急") ? "A" : composerDraft.priority;
@@ -722,7 +840,7 @@ function App() {
         action: computeOpportunityAction({ status: "TO APPLY", deadline: parsedDeadline, dueDate: parsedDueDate || draft.dueDate, match: parsedMatch, priority: parsedPriority }),
         resumeId: defaultResumeId,
         nextAction: `确认 ${getResumeName(defaultResumeId)} 后投递`,
-        sourceLabel: fileName || (composerSource.sourceKind === "job-link" ? "招聘链接" : "文字 JD"),
+        sourceLabel: fileName || (composerSource.sourceKind === "job-link" ? "招聘链接" : "岗位描述"),
         sourceText: parsedSourceText,
       }));
       }
@@ -732,8 +850,8 @@ function App() {
       const transcript =
         rawText ||
         (isAudio
-          ? `录音文件：${fileName}。文件已保存；开启转写 Assist 后会通过本地 API 调用转写服务。`
-          : `文字稿文件：${fileName}。本地 API 可读取 txt/md/docx 文本；旧 .doc 请先另存为 .docx 或粘贴文字稿。`);
+          ? `录音文件：${fileName}。文件已保存；开启录音转文字后可以继续整理。`
+          : `文字稿文件：${fileName}。如果没有读到内容，可以直接粘贴文字稿。`);
       setComposerDraft((draft) => ({
         ...draft,
         linkedOpportunityId: draft.linkedOpportunityId,
@@ -754,14 +872,14 @@ function App() {
         title: draft.title || baseName,
         fileName,
         roles: rawText.match(/产品|策略|增长/) ? "产品 / 策略" : rawText.match(/数据|SQL|Python/) ? "数据分析" : "前端 / 全栈",
-        points: rawText || "文件已保存；本地 API 可读取 txt/md/PDF/DOCX 简历文本，图片简历需开启 Assist OCR。",
-        summary: composerSource.note || "结构化字段会基于已粘贴或可提取的文本生成。",
+        points: rawText || "文件已保存；如果没有读到内容，可以直接粘贴简历文字。",
+        summary: composerSource.note || "请确认简历定位和核心卖点。",
       }));
       }
 
       setComposerStep("review");
       setComposerParseNotice("");
-      setSystemMessage("[SOURCE PARSED]");
+      setSystemMessage("内容已整理");
     };
 
     const shouldUseAiAssist =
@@ -781,16 +899,16 @@ function App() {
       setSystemMessage(`[PARSE BLOCKED: ${status}]`);
     };
 
-    if (composer === "interview" && rawText && shouldUseAiAssist && !isAiProviderConfigured(aiSettings)) {
-      blockParseWithNotice("ai-not-configured", "面试文字稿已选择 Assist，但还没有配置可用的服务商/API Key。请配置后重试。");
+    if (composer === "interview" && interviewInputMode === "raw-transcript" && (!isApiEnabled || !shouldUseAiAssist || !isAiProviderConfigured(aiSettings))) {
+      blockParseWithNotice("ai-not-configured", "未整理的面试文稿需要先开启智能整理；整理好的复盘文档可以切回上一个方式直接导入。");
       return;
     }
 
     if (shouldUseParseApi && ["opportunity", "interview", "resume"].includes(composer)) {
       try {
         setComposerParsing(true);
-        setComposerParseNotice("正在读取文件并解析，请稍候...");
-        setSystemMessage("[PARSING VIA API]");
+        setComposerParseNotice("正在整理内容，请稍候...");
+        setSystemMessage("正在整理内容");
         const payload = {
           rawText,
           fileName,
@@ -823,7 +941,7 @@ function App() {
             blockParseWithNotice(
               parsed.extractionStatus ?? "file-extraction-failed",
               [extractionStatusLabel(parsed.extractionStatus), parsed.extractionError].filter(Boolean).join("：") ||
-                "文件提取失败，请检查 Assist 配置、模型和 endpoint。",
+                "没有读到有效内容，请检查文件，或直接粘贴文字。",
             );
             return;
           }
@@ -858,7 +976,7 @@ function App() {
             blockParseWithNotice(
               parsed.extractionStatus ?? "file-extraction-failed",
               [extractionStatusLabel(parsed.extractionStatus), parsed.aiError || parsed.extractionError].filter(Boolean).join("：") ||
-                "AI 面试复盘失败，请检查 Assist 配置、模型和 endpoint。",
+                "面试复盘整理失败，请检查设置后重试。",
             );
             return;
           }
@@ -882,7 +1000,7 @@ function App() {
             blockParseWithNotice(
               parsed.extractionStatus ?? "file-extraction-failed",
               [extractionStatusLabel(parsed.extractionStatus), parsed.extractionError].filter(Boolean).join("：") ||
-                "文件提取失败，请检查 Assist 配置、模型和 endpoint。",
+                "没有读到有效内容，请检查文件，或直接粘贴文字。",
             );
             return;
           }
@@ -898,7 +1016,7 @@ function App() {
         }
         setComposerStep("review");
         setComposerParseNotice("");
-        setSystemMessage("[SOURCE PARSED VIA API]");
+        setSystemMessage("内容已整理");
         return;
       } catch (error) {
         const errorDetail = error instanceof Error ? error.message : String(error || "");
@@ -906,25 +1024,25 @@ function App() {
           blockParseWithNotice(
             "ai-parser-failed",
             [
-              "AI 面试复盘调用失败，已停止写入旧规则结果。",
-              errorDetail ? `实际错误：${errorDetail}` : "请检查模型、Key、endpoint 后重试。",
+              "面试复盘整理失败，暂时没有保存新内容。",
+              errorDetail ? `错误信息：${errorDetail}` : "请检查设置后重试。",
             ].join(" "),
           );
           return;
         }
         if (requiresFileExtraction) {
-          blockParseWithNotice("file-extraction-failed", "本地 API 解析失败。请确认 API ONLINE，或先粘贴文字内容再解析。");
+          blockParseWithNotice("file-extraction-failed", "没有读到文件内容，请先粘贴文字再继续。");
           return;
         }
-        setComposerParseNotice("API 解析失败，已回退到本地规则解析。");
-        setSystemMessage("[PARSER FALLBACK]");
+        setComposerParseNotice("智能整理暂时不可用，已改用基础整理。");
+        setSystemMessage("已改用基础整理");
       } finally {
         setComposerParsing(false);
       }
     }
 
     if (requiresFileExtraction && composerSource.sourceKind === "audio" && aiSettings.transcriptionMode !== "assist") {
-      blockParseWithNotice("transcription-unavailable", "录音需要先开启「录音转写 → Assist」。");
+      blockParseWithNotice("transcription-unavailable", "录音需要先在设置里开启「录音转文字」。");
       return;
     }
 
@@ -934,7 +1052,7 @@ function App() {
   const openOpportunity = (id: string) => {
     setSelectedOpportunityId(id);
     setPage("opportunityDetail");
-    setSystemMessage("[OPENED: OPPORTUNITY DETAIL]");
+    setSystemMessage("已打开岗位详情");
   };
 
   const selectInterview = (id: string) => {
@@ -942,6 +1060,21 @@ function App() {
     if (!nextSession) return;
     setSelectedInterviewId(id);
     setSelectedQaId(nextSession.qaPairs[0]?.id ?? "");
+  };
+
+  const openInterviewSession = (id: string) => {
+    selectInterview(id);
+    setInterviewView("session");
+  };
+
+  const openInterviewQuestion = (id: string) => {
+    setSelectedQaId(id);
+    setInterviewView("question");
+  };
+
+  const openAnswerCard = (id: string) => {
+    setSelectedAnswerId(id);
+    setAnswerView("detail");
   };
 
   const updateSelectedQa = (field: keyof Pick<QaPair, "originalAnswer" | "critique" | "framework" | "optimizedAnswer">, value: string) => {
@@ -972,7 +1105,7 @@ function App() {
     );
     invalidateApiInsights();
     syncUpdatedQaPair(selectedQa.id, { weak });
-    setSystemMessage(weak ? "[QA REOPENED]" : "[QA REVIEWED]");
+    setSystemMessage(weak ? "已重新标为薄弱" : "已标记处理");
   };
 
   const updateSelectedInterview = (patch: Partial<InterviewSession>) => {
@@ -1003,13 +1136,13 @@ function App() {
   const executeReparseSelectedInterview = async () => {
     const transcript = getInterviewTranscriptText(selectedInterview);
     if (!transcript) {
-      setInterviewReparseNotice("找不到可用文字稿。请先在原始材料里保存文字稿内容，或重新上传后再解析。");
+      setInterviewReparseNotice("找不到可用文字稿。请先保存文字稿内容，或重新上传后再整理。");
       return;
     }
 
     setInterviewReparseBusy(true);
-    setInterviewReparseNotice("正在根据原始文字稿重新解析，请稍候...");
-    setSystemMessage("[INTERVIEW REPARSE]");
+    setInterviewReparseNotice("正在根据文字稿重新整理，请稍候...");
+    setSystemMessage("正在重新整理面试");
 
     try {
       const shouldUseAiAssist = aiSettings.parseMode === "assist";
@@ -1040,7 +1173,7 @@ function App() {
         if (failedExtractionStatuses.has(parsed.extractionStatus ?? "")) {
           setInterviewReparseNotice(
             [extractionStatusLabel(parsed.extractionStatus), parsed.aiError || parsed.extractionError].filter(Boolean).join("：") ||
-              "重新解析失败，请检查文字稿或 Assist 配置。",
+              "重新整理失败，请检查文字稿或智能整理设置。",
           );
           setSystemMessage(`[REPARSE BLOCKED: ${parsed.extractionStatus ?? "failed"}]`);
           return;
@@ -1051,18 +1184,18 @@ function App() {
       }
 
       if (!nextPairs.length) {
-        setInterviewReparseNotice("没有从文字稿中识别出有效问题。请检查文字稿格式，或开启 Assist 后重试。");
-        setSystemMessage("[REPARSE EMPTY]");
+        setInterviewReparseNotice("没有从文字稿中识别出有效问题。请检查文字稿格式，或开启智能整理后重试。");
+        setSystemMessage("没有识别出问题");
         return;
       }
 
       replaceInterviewQaPairs(selectedInterview.id, selectedInterview.qaPairs, nextPairs);
-      setInterviewReparseNotice(`已重新解析 ${nextPairs.length} 个问题。`);
-      setSystemMessage("[INTERVIEW REPARSED]");
+      setInterviewReparseNotice(`已重新整理 ${nextPairs.length} 个问题。`);
+      setSystemMessage("面试已重新整理");
     } catch (error) {
       const errorDetail = error instanceof Error ? error.message : String(error || "");
-      setInterviewReparseNotice(errorDetail ? `重新解析失败：${errorDetail}` : "重新解析失败，请稍后重试。");
-      setSystemMessage("[REPARSE FAILED]");
+      setInterviewReparseNotice(errorDetail ? `重新整理失败：${errorDetail}` : "重新整理失败，请稍后重试。");
+      setSystemMessage("重新整理失败");
     } finally {
       setInterviewReparseBusy(false);
     }
@@ -1071,13 +1204,13 @@ function App() {
   const requestReparseSelectedInterview = () => {
     const transcript = getInterviewTranscriptText(selectedInterview);
     if (!transcript) {
-      setInterviewReparseNotice("找不到可用文字稿。请先在原始材料里保存文字稿内容，或重新上传后再解析。");
+      setInterviewReparseNotice("找不到可用文字稿。请先保存文字稿内容，或重新上传后再整理。");
       return;
     }
     requestConfirm({
-      title: "重新解析这场面试的问题？",
-      description: "会用原始文字稿重新拆题并生成复盘，当前问题列表会被替换。",
-      confirmLabel: "重新解析",
+      title: "重新整理这场面试？",
+      description: "会根据文字稿重新生成问题列表，当前问题会被替换。",
+      confirmLabel: "重新整理",
       onConfirm: () => {
         void executeReparseSelectedInterview();
       },
@@ -1101,8 +1234,9 @@ function App() {
       sessions.map((session) => (session.id === selectedInterviewId ? { ...session, qaPairs: [...session.qaPairs, newQa] } : session)),
     );
     setSelectedQaId(newQa.id);
+    setInterviewView("question");
     syncCreatedQaPair(selectedInterviewId, newQa);
-    setSystemMessage("[QA ADDED]");
+    setSystemMessage("已添加问题");
   };
 
   const requestConfirm = (config: ConfirmDialogState) => setConfirmDialog(config);
@@ -1125,39 +1259,39 @@ function App() {
         setAnswerCards((cards) => cards.map((item) => (item.id === card.id ? savedCard : item)));
         setSelectedAnswerId((id) => (id === card.id ? savedCard.id : id));
       })
-      .catch(() => setSystemMessage("[ANSWER LOCAL ONLY]"));
+      .catch(() => setSystemMessage("答案卡已保存在本机"));
   };
 
   const syncUpdatedAnswerCard = (id: string, patch: Partial<AnswerCard>) => {
-    void updateAnswerCardApi(id, patch).catch(() => setSystemMessage("[ANSWER LOCAL ONLY]"));
+    void updateAnswerCardApi(id, patch).catch(() => setSystemMessage("答案卡已保存在本机"));
   };
 
   const syncDeletedAnswerCard = (id: string) => {
-    void deleteAnswerCardApi(id).catch(() => setSystemMessage("[ANSWER LOCAL ONLY]"));
+    void deleteAnswerCardApi(id).catch(() => setSystemMessage("答案卡已在本机更新"));
   };
 
   const syncWeeklyPlanPatch = (patch: Partial<Omit<WeeklyPlan, "tasks">>) => {
     void updateWeeklyPlanApi(patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[WEEKLY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("训练计划已保存在本机"));
   };
 
   const syncCreatedWeeklyTask = (task: WeeklyTask) => {
     void createWeeklyTaskApi(task)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[WEEKLY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("训练计划已保存在本机"));
   };
 
   const syncUpdatedWeeklyTask = (id: string, patch: Partial<WeeklyTask>) => {
     void updateWeeklyTaskApi(id, patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[WEEKLY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("训练计划已保存在本机"));
   };
 
   const syncDeletedWeeklyTask = (id: string) => {
     void deleteWeeklyTaskApi(id)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[WEEKLY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("训练计划已保存在本机"));
   };
 
   const syncCreatedResumeVersion = (resume: ResumeVersion) => {
@@ -1166,20 +1300,20 @@ function App() {
         setResumeList((items) => items.map((item) => (item.id === resume.id ? savedResume : item)));
         setSelectedResumeId((id) => (id === resume.id ? savedResume.id : id));
       })
-      .catch(() => setSystemMessage("[RESUME LOCAL ONLY]"));
+      .catch(() => setSystemMessage("简历已保存在本机"));
   };
 
   const syncUpdatedResumeVersion = (id: string, patch: Partial<ResumeVersion>) => {
-    void updateResumeVersionApi(id, patch).catch(() => setSystemMessage("[RESUME LOCAL ONLY]"));
+    void updateResumeVersionApi(id, patch).catch(() => setSystemMessage("简历已保存在本机"));
   };
 
   const syncDeletedResumeVersion = (id: string) => {
-    void deleteResumeVersionApi(id).catch(() => setSystemMessage("[RESUME LOCAL ONLY]"));
+    void deleteResumeVersionApi(id).catch(() => setSystemMessage("简历已在本机更新"));
   };
 
   const syncCreatedInterviewSession = (session: InterviewSession) => {
     if (session.opportunityId && !apiOpportunityIdsRef.current.has(session.opportunityId)) {
-      setSystemMessage("[INTERVIEW LOCAL ONLY]");
+      setSystemMessage("面试复盘已保存在本机");
       return;
     }
     void createInterviewSessionApi(session)
@@ -1187,30 +1321,39 @@ function App() {
         setInterviewSessions((sessions) => sessions.map((item) => (item.id === session.id ? savedSession : item)));
         setSelectedInterviewId((id) => (id === session.id ? savedSession.id : id));
         setSelectedQaId((id) => (session.qaPairs.some((pair) => pair.id === id) ? savedSession.qaPairs.find((pair) => pair.id === id)?.id ?? id : id));
+        if (savedSession.opportunityId) {
+          void getOpportunitiesApi()
+            .then((items) => {
+              setOpportunities(items);
+              apiOpportunityIdsRef.current = new Set(items.map((item) => item.id));
+            })
+            .catch(() => setSystemMessage("岗位进度已保存在本机"));
+        }
+        refreshApiInsights();
       })
-      .catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+      .catch(() => setSystemMessage("面试复盘已保存在本机"));
   };
 
   const syncUpdatedInterviewSession = (id: string, patch: Partial<InterviewSession>) => {
-    void updateInterviewSessionApi(id, patch).catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+    void updateInterviewSessionApi(id, patch).catch(() => setSystemMessage("面试复盘已保存在本机"));
   };
 
   const syncCreatedQaPair = (interviewId: string, qaPair: QaPair) => {
-    void createQaPairApi(interviewId, qaPair).catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+    void createQaPairApi(interviewId, qaPair).catch(() => setSystemMessage("面试问题已保存在本机"));
   };
 
   const syncUpdatedQaPair = (id: string, patch: Partial<QaPair>) => {
     void updateQaPairApi(id, patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+      .catch(() => setSystemMessage("面试复盘已保存在本机"));
   };
 
   const syncDeletedQaPair = (id: string) => {
-    void deleteQaPairApi(id).catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+    void deleteQaPairApi(id).catch(() => setSystemMessage("面试问题已在本机更新"));
   };
 
   const syncDeletedInterviewSession = (id: string) => {
-    void deleteInterviewSessionApi(id).catch(() => setSystemMessage("[INTERVIEW LOCAL ONLY]"));
+    void deleteInterviewSessionApi(id).catch(() => setSystemMessage("面试复盘已在本机更新"));
   };
 
   const syncCreatedOpportunity = (opportunity: Opportunity) => {
@@ -1221,29 +1364,29 @@ function App() {
         setOpportunities((items) => {
           const currentOpportunity = items.find((item) => item.id === savedOpportunity.id);
           if (currentOpportunity && JSON.stringify(currentOpportunity) !== JSON.stringify(savedOpportunity)) {
-            void updateOpportunityApi(savedOpportunity.id, currentOpportunity).catch(() => setSystemMessage("[OPPORTUNITY LOCAL ONLY]"));
+            void updateOpportunityApi(savedOpportunity.id, currentOpportunity).catch(() => setSystemMessage("岗位已保存在本机"));
             return items;
           }
           return items.map((item) => (item.id === opportunity.id ? savedOpportunity : item));
         });
         setSelectedOpportunityId((id) => (id === opportunity.id ? savedOpportunity.id : id));
       })
-      .catch(() => setSystemMessage("[OPPORTUNITY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("岗位已保存在本机"));
   };
 
   const syncUpdatedOpportunity = (id: string, patch: Partial<Opportunity>) => {
     if (!apiOpportunityIdsRef.current.has(id)) {
-      setSystemMessage("[OPPORTUNITY LOCAL ONLY]");
+      setSystemMessage("岗位已保存在本机");
       return;
     }
     void updateOpportunityApi(id, patch)
       .then(refreshApiInsights)
-      .catch(() => setSystemMessage("[OPPORTUNITY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("岗位已保存在本机"));
   };
 
   const syncDeletedOpportunity = (id: string) => {
     if (!apiOpportunityIdsRef.current.has(id)) {
-      setSystemMessage("[OPPORTUNITY LOCAL ONLY]");
+      setSystemMessage("岗位已保存在本机");
       return;
     }
     void deleteOpportunityApi(id)
@@ -1251,29 +1394,30 @@ function App() {
         apiOpportunityIdsRef.current.delete(id);
         refreshApiInsights();
       })
-      .catch(() => setSystemMessage("[OPPORTUNITY LOCAL ONLY]"));
+      .catch(() => setSystemMessage("岗位已保存在本机"));
   };
 
   const deleteSelectedQa = () => {
     const qaId = selectedQa.id;
     const remaining = selectedInterview.qaPairs.filter((pair) => pair.id !== selectedQa.id);
     if (remaining.length === 0) {
-      setSystemMessage("[KEEP AT LEAST ONE QA]");
+      setSystemMessage("至少保留一个问题");
       return;
     }
     setInterviewSessions((sessions) =>
       sessions.map((session) => (session.id === selectedInterviewId ? { ...session, qaPairs: remaining } : session)),
     );
     setSelectedQaId(remaining[0].id);
+    setInterviewView("session");
     syncDeletedQaPair(qaId);
-    setSystemMessage("[QA DELETED]");
+    setSystemMessage("问题已删除");
   };
 
   const deleteSelectedInterview = () => {
     const interviewId = selectedInterview.id;
     const remaining = interviewSessions.filter((session) => session.id !== interviewId);
     if (remaining.length === 0) {
-      setSystemMessage("[KEEP AT LEAST ONE INTERVIEW]");
+      setSystemMessage("至少保留一场面试");
       return;
     }
     setInterviewSessions(remaining);
@@ -1281,9 +1425,10 @@ function App() {
     setSelectedQaId(remaining[0].qaPairs[0]?.id ?? "");
     setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => !(task.source === "interview" && task.relatedEntityId === interviewId)) }));
     setInterviewPage(0);
+    setInterviewView("list");
     invalidateApiInsights();
     syncDeletedInterviewSession(interviewId);
-    setSystemMessage("[INTERVIEW DELETED]");
+    setSystemMessage("面试已删除");
   };
 
   const addAnswerCard = () => {
@@ -1300,8 +1445,9 @@ function App() {
     };
     setAnswerCards((cards) => [newCard, ...cards]);
     setSelectedAnswerId(newCard.id);
+    setAnswerView("detail");
     syncCreatedAnswerCard(newCard);
-    setSystemMessage("[ANSWER CARD ADDED]");
+    setSystemMessage("答案卡已添加");
   };
 
   const updateSelectedAnswer = (field: keyof Pick<AnswerCard, "question" | "type" | "framework" | "answer" | "relatedRoles" | "practiceStatus" | "status">, value: string) => {
@@ -1321,15 +1467,16 @@ function App() {
     const answerId = selectedAnswer.id;
     const remaining = answerCards.filter((card) => card.id !== selectedAnswer.id);
     if (remaining.length === 0) {
-      setSystemMessage("[KEEP AT LEAST ONE ANSWER]");
+      setSystemMessage("至少保留一张答案卡");
       return;
     }
     setAnswerCards(remaining);
     setSelectedAnswerId(remaining[0].id);
+    setAnswerView("list");
     setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => !(task.source === "answer" && task.relatedEntityId === answerId)) }));
     invalidateApiInsights();
     syncDeletedAnswerCard(answerId);
-    setSystemMessage("[ANSWER CARD DELETED]");
+    setSystemMessage("答案卡已删除");
   };
 
   const addResumeVersion = () => {
@@ -1346,7 +1493,7 @@ function App() {
     const resumeId = selectedResume.id;
     const remaining = resumeList.filter((resume) => resume.id !== selectedResume.id);
     if (remaining.length === 0) {
-      setSystemMessage("[KEEP AT LEAST ONE RESUME]");
+      setSystemMessage("至少保留一份简历");
       return;
     }
     setResumeList(remaining);
@@ -1354,14 +1501,14 @@ function App() {
     setOpportunities((items) => items.map((opportunity) => (opportunity.resumeId === resumeId ? { ...opportunity, resumeId: "" } : opportunity)));
     invalidateApiInsights();
     syncDeletedResumeVersion(resumeId);
-    setSystemMessage("[RESUME VERSION DELETED]");
+    setSystemMessage("简历已删除");
   };
 
   const deleteSelectedOpportunity = () => {
     const opportunityId = selectedOpportunity.id;
     const remaining = opportunities.filter((opportunity) => opportunity.id !== opportunityId);
     if (remaining.length === 0) {
-      setSystemMessage("[KEEP AT LEAST ONE OPPORTUNITY]");
+      setSystemMessage("至少保留一个岗位");
       return;
     }
 
@@ -1381,7 +1528,7 @@ function App() {
     invalidateApiInsights();
     goTo("opportunities");
     syncDeletedOpportunity(opportunityId);
-    setSystemMessage("[OPPORTUNITY DELETED]");
+    setSystemMessage("岗位已删除");
   };
 
   const exportStamp = () => new Date().toISOString().replace(/[:.]/g, "-");
@@ -1400,11 +1547,11 @@ function App() {
 
   const openStoredFile = (storageUri?: string) => {
     if (!storageUri || !isApiEnabled) {
-      setSystemMessage("[FILE NOT STORED]");
+      setSystemMessage("没有可打开的文件");
       return;
     }
     window.open(`${apiBaseUrl}${storageUri}`, "_blank", "noopener,noreferrer");
-    setSystemMessage("[FILE PREVIEW OPENED]");
+    setSystemMessage("已打开文件预览");
   };
 
   const buildLocalBackup = (): JobPilotBackup => ({
@@ -1421,7 +1568,7 @@ function App() {
 
   const writeBackupFile = (backup: JobPilotBackup) => {
     downloadTextFile(`jobpilot-backup-${exportStamp()}.json`, JSON.stringify(backup, null, 2), "application/json");
-    setSystemMessage("[BACKUP EXPORTED]");
+    setSystemMessage("备份已导出");
   };
 
   const exportBackup = () => {
@@ -1433,7 +1580,7 @@ function App() {
       .then(writeBackupFile)
       .catch(() => {
         writeBackupFile(buildLocalBackup());
-        setSystemMessage("[BACKUP LOCAL ONLY]");
+        setSystemMessage("备份已恢复到本机");
       });
   };
 
@@ -1449,9 +1596,9 @@ function App() {
         const restoredBackup = isApiEnabled ? await importBackupApi(backup) : backup;
         applyLoadedData(restoredBackup);
         if (isApiEnabled) refreshApiInsights();
-        setSystemMessage(isApiEnabled ? "[BACKUP RESTORED]" : "[BACKUP RESTORED LOCAL]");
+        setSystemMessage("备份已恢复");
       } catch {
-        setSystemMessage("[BACKUP IMPORT FAILED]");
+        setSystemMessage("备份恢复失败");
       }
     };
     input.click();
@@ -1483,7 +1630,7 @@ function App() {
       ]),
     ].join("\n");
     downloadTextFile(`jobpilot-answer-cards-${exportStamp()}.md`, markdown, "text/markdown");
-    setSystemMessage("[ANSWER CARDS EXPORTED]");
+    setSystemMessage("答案卡已导出");
   };
 
   const exportInterviewReviews = () => {
@@ -1526,23 +1673,24 @@ function App() {
       ]),
     ].join("\n");
     downloadTextFile(`jobpilot-interview-reviews-${exportStamp()}.md`, markdown, "text/markdown");
-    setSystemMessage("[REVIEWS EXPORTED]");
+    setSystemMessage("面试复盘已导出");
   };
 
-  const addWeeklyTask = () => {
+  const addWeeklyTask = (preset?: Partial<Pick<WeeklyTask, "title" | "detail">>) => {
     const newTask: WeeklyTask = {
       id: makeId("WT"),
-      title: "新增训练或杂项动作",
-      detail: "适合放练笔试、练英语、补材料等不属于具体岗位或面试的问题。",
+      title: preset?.title ?? "新的练习动作",
+      detail: preset?.detail ?? "写下今天准备推进的一件小事。",
       source: "manual",
       sourceLabel: "训练计划",
       level: "P2",
       status: "open",
     };
     setWeeklyPlan((plan) => ({ ...plan, tasks: [newTask, ...plan.tasks] }));
+    setWeeklyEditingTaskId(newTask.id);
     invalidateApiInsights();
     syncCreatedWeeklyTask(newTask);
-    setSystemMessage("[WEEKLY TASK ADDED]");
+    setSystemMessage("动作已添加");
   };
 
   const updateWeeklyTask = (id: string, field: keyof Pick<WeeklyTask, "title" | "detail" | "status" | "level">, value: string) => {
@@ -1564,9 +1712,10 @@ function App() {
 
   const deleteWeeklyTask = (id: string) => {
     setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => task.id !== id) }));
+    setWeeklyEditingTaskId((currentId) => (currentId === id ? null : currentId));
     invalidateApiInsights();
     syncDeletedWeeklyTask(id);
-    setSystemMessage("[WEEKLY TASK DELETED]");
+    setSystemMessage("动作已删除");
   };
 
   const addWeeklyFocus = (field: keyof Pick<WeeklyPlan, "focusDirections" | "focusCities" | "focusCompanies" | "practiceThemes">, value: string) => {
@@ -1574,7 +1723,7 @@ function App() {
     const nextValues = [...weeklyPlan[field], value.trim()];
     setWeeklyPlan((plan) => ({ ...plan, [field]: [...plan[field], value.trim()] }));
     syncWeeklyPlanPatch({ [field]: nextValues });
-    setSystemMessage("[WEEKLY FOCUS ADDED]");
+    setSystemMessage("训练重点已添加");
   };
 
   const createWeeklyTask = (task: Omit<WeeklyTask, "id" | "status">) => {
@@ -1587,14 +1736,14 @@ function App() {
     setWeeklyPlan((plan) => ({ ...plan, tasks: [newTask, ...plan.tasks] }));
     invalidateApiInsights();
     syncCreatedWeeklyTask(newTask);
-    setSystemMessage("[WEEKLY TASK CONNECTED]");
+    setSystemMessage("任务已添加");
   };
 
   const addSelectedAnswerToPractice = () => {
     const existingTask = weeklyPlan.tasks.find((task) => task.source === "answer" && task.relatedEntityId === selectedAnswer.id && task.status === "open");
     if (existingTask) {
       goTo("weekly");
-      setSystemMessage("[PRACTICE TASK OPEN]");
+      setSystemMessage("已打开练习任务");
       return;
     }
 
@@ -1629,7 +1778,7 @@ function App() {
 
   const createOpportunityDirect = () => {
     if (!composerDraft.company.trim() || !composerDraft.title.trim() || !composerDraft.sourceText.trim()) {
-      setSystemMessage("[COMPLETE COMPANY / TITLE / JD]");
+      setSystemMessage("请补齐公司、岗位和岗位描述");
       return;
     }
 
@@ -1657,14 +1806,14 @@ function App() {
       dueDate,
       resumeId: composerDraft.resumeId || resumeList[0]?.id || "",
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
-      jdSummary: composerSource.note || "由岗位管理内上传材料解析生成的岗位记录。",
+      jdSummary: composerSource.note || "从上传材料整理出的岗位记录。",
       jdText: composerDraft.sourceText.trim(),
       sourceAssets: [
         {
           id: makeId("SRC"),
           kind: sourceKind,
-          title: composerSource.fileName || composerDraft.sourceLabel || "岗位 JD",
-          detail: composerSource.note || "模块内上传后自动解析并写入岗位管理",
+          title: composerSource.fileName || composerDraft.sourceLabel || "岗位描述",
+          detail: composerSource.note || "从上传材料整理",
           createdAt: now,
           content: composerDraft.sourceText.trim(),
           storageUri: composerSource.storageUri,
@@ -1672,7 +1821,7 @@ function App() {
       ],
       timeline: [
         { id: makeId("TL"), occurredAt: now, title: "写入岗位管理", detail: "必填信息满足后直接生成正式岗位记录", status: "done" },
-        { id: makeId("TL"), occurredAt: "Next", title: composerDraft.nextAction.trim() || "补齐材料后投递", detail: "由当前岗位进度生成下一步动作", status: "next" },
+        { id: makeId("TL"), occurredAt: "Next", title: composerDraft.nextAction.trim() || "补齐材料后投递", detail: "当前进度的备注", status: "next" },
       ],
     };
 
@@ -1681,12 +1830,12 @@ function App() {
     syncCreatedOpportunity(nextOpportunity);
     setComposer(null);
     setPage("opportunityDetail");
-    setSystemMessage("[OPPORTUNITY CREATED]");
+    setSystemMessage("岗位已创建");
   };
 
   const createInterviewDirect = () => {
     if (!composerDraft.company.trim() || !composerDraft.role.trim() || !composerDraft.round.trim()) {
-      setSystemMessage("[COMPLETE COMPANY / ROLE / ROUND]");
+      setSystemMessage("请补齐公司、岗位和轮次");
       return;
     }
 
@@ -1701,7 +1850,7 @@ function App() {
         id: makeId("FILE"),
         kind: isAudio ? "audio" : "transcript",
         fileName,
-        detail: composerSource.note || (isAudio ? "原录音，系统会先转写再拆分 QA" : "原始文字稿，系统会拆分 QA"),
+        detail: composerSource.note || (isAudio ? "原录音，整理前会先转成文字" : "原始文字稿"),
         uploadedAt: now,
         duration: isAudio ? "待识别" : undefined,
         storageUri: composerSource.storageUri,
@@ -1720,6 +1869,12 @@ function App() {
       });
     }
 
+    if (interviewInputMode === "raw-transcript" && !composerParsedQaPairs.length) {
+      setSystemMessage("请先用智能整理生成复盘");
+      setComposerParseNotice("未整理的面试文稿需要先开启智能整理并生成复盘后，才能创建正式记录。");
+      return;
+    }
+
     const parsedQaPairs = composerParsedQaPairs.length ? composerParsedQaPairs : hasUsableTranscript ? parseTranscriptQaPairs(sourceText) : [];
     const qaPairs: QaPair[] = parsedQaPairs.length
       ? parsedQaPairs.map((pair) => ({
@@ -1730,13 +1885,13 @@ function App() {
       {
         id: makeId("QA"),
         question: hasUsableTranscript ? "待从文字稿中确认的面试问题" : "等待转写或粘贴面试文字稿",
-        originalAnswer: hasUsableTranscript ? sourceText : "当前没有可用文字稿；请上传 txt/md 文字稿、粘贴转写内容，或开启录音转写 Assist 后重新解析。",
+        originalAnswer: hasUsableTranscript ? sourceText : "当前没有可用文字稿；请上传文字稿、粘贴转写内容，或开启录音转文字后重新整理。",
         type: "PROJECT",
         score: 2,
-        critique: hasUsableTranscript ? "已有文字稿，但未识别出清晰 Q/A 结构；建议按“问题/回答”格式整理后重新解析。" : "缺少真实文字稿，无法生成有效复盘。",
+        critique: hasUsableTranscript ? "已有文字稿，但没有识别出清晰的问答结构；建议按“问题/回答”格式整理后重试。" : "缺少真实文字稿，暂时无法生成有效复盘。",
         weak: true,
         framework: "基线 -> 目标 -> 动作 -> 指标结果 -> 复盘限制",
-        optimizedAnswer: hasUsableTranscript ? "把文字稿整理成“面试官：问题 / 我：回答”的格式后，系统会更稳定地拆分 QA。" : "先获得真实文字稿，再生成优化回答。",
+        optimizedAnswer: hasUsableTranscript ? "把文字稿整理成“面试官：问题 / 我：回答”的格式后，再重新整理会更稳定。" : "先获得真实文字稿，再生成优化回答。",
       },
     ];
 
@@ -1755,17 +1910,18 @@ function App() {
     setSelectedInterviewId(nextSession.id);
     setSelectedQaId(nextSession.qaPairs[0]?.id ?? "");
     syncCreatedInterviewSession(nextSession);
-    if (nextSession.opportunityId) {
-      applyOpportunityProgress(nextSession.opportunityId, "INTERVIEWING", "system", "新增" + nextSession.round + "面试复盘后自动推进");
+    if (nextSession.opportunityId && (!isApiEnabled || !apiOpportunityIdsRef.current.has(nextSession.opportunityId))) {
+      applyOpportunityProgress(nextSession.opportunityId, "WAITING", "system", "新增" + nextSession.round + "面试复盘后自动推进");
     }
     setComposer(null);
+    setInterviewView("session");
     setPage("interviews");
-    setSystemMessage("[INTERVIEW CREATED]");
+    setSystemMessage("面试复盘已创建");
   };
 
   const createResumeDirect = () => {
     if (!composerDraft.title.trim() || !composerDraft.fileName.trim()) {
-      setSystemMessage("[COMPLETE RESUME NAME / FILE]");
+      setSystemMessage("请补齐简历名称和文件");
       return;
     }
 
@@ -1789,12 +1945,12 @@ function App() {
     syncCreatedResumeVersion(nextResume);
     setComposer(null);
     setPage("resumes");
-    setSystemMessage("[RESUME CREATED]");
+    setSystemMessage("简历已添加");
   };
 
   const createAnswerDirect = () => {
     if (!composerDraft.question.trim()) {
-      setSystemMessage("[COMPLETE QUESTION]");
+      setSystemMessage("请先填写问题");
       return;
     }
 
@@ -1814,8 +1970,9 @@ function App() {
     setSelectedAnswerId(newCard.id);
     syncCreatedAnswerCard(newCard);
     setComposer(null);
+    setAnswerView("detail");
     setPage("answers");
-    setSystemMessage("[ANSWER CREATED]");
+    setSystemMessage("答案卡已创建");
   };
 
   const submitComposer = () => {
@@ -1833,15 +1990,14 @@ function App() {
   ) => {
     const targetOpportunity = opportunities.find((item) => item.id === opportunityId);
     if (!targetOpportunity) return;
-    const alreadySubmitted = submittedStatuses.includes(targetOpportunity.status);
     const now = formatNow();
     const nextAction = opportunityStatusNextAction[status];
     const nextComputedAction = computeOpportunityAction({ ...targetOpportunity, status });
     const timelineEvent = {
       id: makeId("TL"),
       occurredAt: now,
-      title: source === "system" ? `系统推进到${statusLabel[status]}` : `手动更新为${statusLabel[status]}`,
-      detail: detailOverride || (source === "system" ? "系统根据模块关联信息自动更新岗位进度" : "用户手动覆盖当前岗位阶段"),
+      title: source === "system" ? `进度更新为${statusLabel[status]}` : `已更新为${statusLabel[status]}`,
+      detail: detailOverride || (source === "system" ? "根据相关记录更新岗位进度" : "手动更新当前岗位阶段"),
       status: "done" as const,
     };
     const buildLocalOpportunity = (opportunity: Opportunity): Opportunity => ({
@@ -1858,14 +2014,14 @@ function App() {
                 id: makeId("TL"),
                 occurredAt: "Next",
                 title: nextAction,
-                detail: "由当前岗位进度生成下一步动作",
+                detail: "当前进度的备注",
                 status: "next" as const,
               },
             ]
           : []),
       ],
     });
-    const applyProgressSideEffects = (opportunity: Opportunity, createLocalFollowupTask = true) => {
+    const applyProgressSideEffects = (opportunity: Opportunity) => {
       if (submittedStatuses.includes(status)) {
         setResumeList((items) =>
           items.map((resume) =>
@@ -1875,27 +2031,18 @@ function App() {
           ),
         );
       }
-
-      if (createLocalFollowupTask && status === "APPLIED" && !alreadySubmitted) {
-        createWeeklyTask({
-          title: `跟进${opportunity.company}${opportunity.title}`,
-          detail: "投递后自动生成的跟进动作，避免投完就丢。",
-          source: "opportunity",
-          sourceLabel: "岗位管理",
-          relatedEntityId: opportunity.id,
-          level: "P1",
-        });
-      }
     };
     const applyLocalProgress = () => {
       const nextOpportunity = buildLocalOpportunity(targetOpportunity);
       setOpportunities((items) => items.map((item) => (item.id === opportunityId ? nextOpportunity : item)));
       applyProgressSideEffects(nextOpportunity);
-      setSystemMessage(`[STATUS: ${status}]`);
+      setApiTodayActions(null);
+      setSystemMessage(`已更新为${statusLabel[status]}`);
     };
 
+    setApiTodayActions(null);
     if (isApiEnabled && apiOpportunityIdsRef.current.has(opportunityId)) {
-      setSystemMessage("[STATUS SYNCING]");
+      setSystemMessage("正在更新进度");
       void progressOpportunityApi(opportunityId, {
         status,
         action: nextComputedAction,
@@ -1904,14 +2051,13 @@ function App() {
       })
         .then((savedOpportunity) => {
           setOpportunities((items) => items.map((item) => (item.id === opportunityId ? savedOpportunity : item)));
-          applyProgressSideEffects(savedOpportunity, false);
-          refreshApiWeeklyPlan();
+          applyProgressSideEffects(savedOpportunity);
           refreshApiInsights();
-          setSystemMessage(`[STATUS: ${status}]`);
+          setSystemMessage(`已更新为${statusLabel[status]}`);
         })
         .catch(() => {
           applyLocalProgress();
-          setSystemMessage("[OPPORTUNITY LOCAL ONLY]");
+          setSystemMessage("岗位已保存在本机");
         });
       return;
     }
@@ -1930,10 +2076,10 @@ function App() {
       const targetOpportunityId = action.targetId || opportunities.find((item) => computeOpportunityAction(item) === "P0")?.id || opportunities[0]?.id;
       if (targetOpportunityId) openOpportunity(targetOpportunityId);
     } else if (action.page === "interviews" && action.targetId) {
-      selectInterview(action.targetId);
+      openInterviewSession(action.targetId);
       goTo("interviews");
     } else if (action.page === "answers" && action.targetId) {
-      setSelectedAnswerId(action.targetId);
+      openAnswerCard(action.targetId);
       goTo("answers");
     } else {
       goTo(action.page);
@@ -1946,7 +2092,21 @@ function App() {
       if (!taskId) return;
       updateWeeklyTask(taskId, "status", "done");
       setApiTodayActions(null);
-      setSystemMessage("[TODAY TASK DONE]");
+      setSystemMessage("今日任务已完成");
+      return;
+    }
+
+    if (action.source === "opportunity" && action.targetId) {
+      const opportunity = opportunities.find((item) => item.id === action.targetId);
+      if (!opportunity) return;
+      const nextStatus = completedOpportunityStatus(opportunity.status);
+      if (nextStatus) {
+        applyOpportunityProgress(opportunity.id, nextStatus, "manual", action.title);
+      } else {
+        setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
+        setSystemMessage("今日已完成");
+      }
+      setApiTodayActions(null);
       return;
     }
 
@@ -1961,19 +2121,19 @@ function App() {
       );
       weakPairs.forEach((pair) => syncUpdatedQaPair(pair.id, { weak: false }));
       setApiTodayActions(null);
-      setSystemMessage("[INTERVIEW REVIEW DONE]");
+      setSystemMessage("复盘任务已完成");
       return;
     }
 
     if (action.source === "answer" && action.targetId) {
       updateAnswerPracticeState(action.targetId, { practiceStatus: "可复用", status: "ACTIVE" });
       setApiTodayActions(null);
-      setSystemMessage("[ANSWER PRACTICE DONE]");
+      setSystemMessage("练习已完成");
       return;
     }
 
     setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
-    setSystemMessage("[TODAY ITEM DISMISSED]");
+    setSystemMessage("今日已暂不显示");
   };
 
   const addSelectedQaToPractice = () => {
@@ -1991,9 +2151,9 @@ function App() {
   const createAnswerCard = () => {
     const existingCard = answerCards.find((card) => card.sourceQaPairId === selectedQa.id || card.question === selectedQa.question);
     if (existingCard) {
-      setSelectedAnswerId(existingCard.id);
+      openAnswerCard(existingCard.id);
       setPage("answers");
-      setSystemMessage("[ANSWER CARD OPENED]");
+      setSystemMessage("已打开答案卡");
       return;
     }
 
@@ -2012,13 +2172,14 @@ function App() {
       };
       setAnswerCards((cards) => [newCard, ...cards]);
       setSelectedAnswerId(newCard.id);
+      setAnswerView("detail");
       syncCreatedAnswerCard(newCard);
       setPage("answers");
-      setSystemMessage("[ANSWER CARD CREATED]");
+      setSystemMessage("答案卡已创建");
     };
 
     if (isApiEnabled) {
-      setSystemMessage("[ANSWER CARD SYNCING]");
+      setSystemMessage("正在生成答案卡");
       void createAnswerCardFromQaPairApi(selectedQa.id)
         .then((savedCard) => {
           setAnswerCards((cards) =>
@@ -2027,12 +2188,13 @@ function App() {
               : [savedCard, ...cards],
           );
           setSelectedAnswerId(savedCard.id);
+          setAnswerView("detail");
           setPage("answers");
-          setSystemMessage("[ANSWER CARD CREATED]");
+          setSystemMessage("答案卡已创建");
         })
         .catch(() => {
           createLocalAnswerCard();
-          setSystemMessage("[ANSWER LOCAL ONLY]");
+          setSystemMessage("答案卡已保存在本机");
         });
       return;
     }
@@ -2097,10 +2259,10 @@ function App() {
 
         {page === "home" && (
           <section className="home-stack">
-            <section className="flow-pipeline" aria-label="产品主链路">
+            <section className="flow-pipeline" aria-label="使用步骤">
               <div className="flow-pipeline-intro">
-                <span className="eyebrow">主链路</span>
-                <p>在对应模块里创建正式记录，系统再收束到今日待办。</p>
+                <span className="eyebrow">使用步骤</span>
+                <p>先把资料放进来，再把今天要推进的事收好。</p>
               </div>
               <ol className="flow-pipeline-steps">
                 {flowPipelineSteps.map((step, index) => (
@@ -2123,7 +2285,7 @@ function App() {
                 <div className="today-heading">
                   <div>
                     <h1>今天先处理这几件事</h1>
-                    <p>系统从岗位、面试、答案库和训练计划里收束出今天要执行的动作。</p>
+                    <p>这里会集中显示你今天最应该推进的投递、复盘和练习。</p>
                   </div>
                   <div className="hero-number small">{todayActions.length}</div>
                 </div>
@@ -2185,22 +2347,22 @@ function App() {
                 </div>
 
                 <div className="surface todo-rule-card">
-                  <SectionTitle label="待办规则" title="每条任务从哪里来" action="SOURCE MAP" />
+                  <SectionTitle label="今日待办" title="待办事项来自于" action="自动汇总" />
                   <div className="todo-rule-list">
                     <button onClick={() => goTo("opportunities")}>
                       <span className="source-chip">岗位</span>
-                      <strong>JD 和进度在岗位管理维护</strong>
-                      <small>P 级由状态、截止日期、匹配度和主观优先级综合计算。</small>
+                      <strong>岗位进度</strong>
+                      <small>待投递、笔试和面试中的岗位会出现在这里。</small>
                     </button>
                     <button onClick={() => goTo("interviews")}>
                       <span className="source-chip">面试</span>
-                      <strong>weak QA 自动进入复盘待办</strong>
-                      <small>点完成会把该场薄弱问题标为已处理。</small>
+                      <strong>面试复盘</strong>
+                      <small>标记为薄弱的问题会提醒你继续练习。</small>
                     </button>
                     <button onClick={() => goTo("weekly")}>
                       <span className="source-chip">训练</span>
-                      <strong>泛任务和练习在训练计划维护</strong>
-                      <small>手动设置 P0-P3；关联任务会跳回岗位、面试或答案库。</small>
+                      <strong>训练计划</strong>
+                      <small>手动添加的练习、材料整理和笔试准备会出现在这里。</small>
                     </button>
                   </div>
                 </div>
@@ -2210,7 +2372,7 @@ function App() {
                   className="surface weekly-strip weekly-strip-button"
                   onClick={() => goTo("weekly")}
                 >
-                  <SectionTitle label="训练计划" title="投递目标" action={`${submittedApplications}/${weeklyPlan.targetApplications}`} />
+                  <SectionTitle label="训练计划" title="本周投递目标" action={`${submittedApplications}/${weeklyPlan.targetApplications}`} />
                   <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
                   <div className="stat-rows">
                     <StatRow label="已投递" value={submittedApplications} />
@@ -2229,21 +2391,21 @@ function App() {
             <PageIntro
               label="岗位管理"
               title="你正在跟进的岗位"
-              detail="按优先级、匹配度和截止时间安排下一步：投递、准备或跟进。"
-              action={`${filteredOpportunities.length} ACTIVE`}
+              detail="按优先级、匹配度和截止时间管理投递备注。"
+              action={`${filteredOpportunities.length} 个岗位`}
             />
             <div className="toolbar-row">
               <div className="filter-bar">
                 {["ALL", "P0", "P1", "A PRIORITY", "HIGH MATCH", "DUE SOON"].map((item) => (
                   <button key={item} className={filter === item ? "active-filter" : ""} onClick={() => setFilter(item)}>
-                    {item}
+                    {opportunityFilterLabel(item)}
                   </button>
                 ))}
               </div>
               <div className="view-toggle">
                 <button className="primary-chip" onClick={() => openComposer("opportunity")}>
                   <Plus size={14} />
-                  新增岗位 / 上传 JD
+                  新增岗位
                 </button>
                 <button className={viewMode === "table" ? "active-filter" : ""} onClick={() => setViewMode("table")}>
                   <FileText size={14} />
@@ -2263,7 +2425,7 @@ function App() {
                   <span>状态</span>
                   <span>优先级</span>
                   <span>截止</span>
-                  <span>下一步动作</span>
+                  <span>备注</span>
                 </div>
                 {filteredOpportunities.map((item) => (
                   <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
@@ -2288,7 +2450,7 @@ function App() {
         )}
 
         {page === "opportunityDetail" && (
-          <section className="split-page">
+          <section className="split-page opportunity-detail-page">
             <div className="surface">
               <button className="ghost-button back-button" onClick={() => goTo("opportunities")}>
                 <ChevronLeft size={16} />
@@ -2297,11 +2459,11 @@ function App() {
               <PageIntro
                 label={selectedOpportunity.id}
                 title={selectedOpportunity.title}
-                detail="岗位详情把投递状态、使用的简历、下一步动作和时间线串在一起。后续面试、复盘和答案卡也会挂到这个岗位下。"
+                detail="这里记录这份岗位的进度、原始材料和备注。"
                 action={selectedOpportunityAction}
               />
               <div className="source-panel">
-                <SectionTitle label="原材料与 JD" title="投递依据都留在这里" action={`${selectedOpportunity.sourceAssets.length} FILES`} />
+                <SectionTitle label="材料" title="原始材料" action={`${selectedOpportunity.sourceAssets.length} 份`} />
                 <div className="source-list">
                   {selectedOpportunity.sourceAssets.map((asset) => (
                     <button className="source-item source-button" key={asset.id} onClick={() => setPreviewAsset(asset)}>
@@ -2315,10 +2477,8 @@ function App() {
                   ))}
                 </div>
                 <div className="jd-brief">
-                  <span>JD 摘要</span>
-                  <textarea value={selectedOpportunity.jdSummary} onChange={(event) => updateSelectedOpportunity({ jdSummary: event.target.value })} />
-                  <span>JD 原文</span>
-                  <textarea value={selectedOpportunity.jdText} onChange={(event) => updateSelectedOpportunity({ jdText: event.target.value })} />
+                  <span>岗位描述原文</span>
+                  <textarea className="jd-full-text" value={selectedOpportunity.jdText} onChange={(event) => updateSelectedOpportunity({ jdText: event.target.value })} />
                 </div>
               </div>
               <div className="draft-edit-grid opportunity-edit-grid">
@@ -2351,8 +2511,8 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  <span>今日动作级别</span>
-                  <input readOnly value={`${selectedOpportunityAction}（由状态、截止日期、匹配度和主观优先级计算）`} />
+                  <span>今日优先级</span>
+                  <input readOnly value={selectedOpportunityAction} />
                 </label>
                 <label>
                   <span>城市</span>
@@ -2381,13 +2541,39 @@ function App() {
                   />
                 </label>
                 <label className="wide-field">
-                  <span>下一步</span>
+                  <span>备注</span>
                   <input value={selectedOpportunity.nextAction} onChange={(event) => updateSelectedOpportunity({ nextAction: event.target.value })} />
                 </label>
               </div>
               <div className="button-row">
                 <button className="primary-button" onClick={markOpportunityApplied}>标记已投递</button>
                 <button className="secondary-button" onClick={() => openComposer("interview", selectedOpportunity.id)}>添加面试</button>
+              </div>
+              <div className="opportunity-status-section">
+                <SectionTitle label="岗位进度" title="进度" action={statusLabel[selectedOpportunity.status]} />
+                <div className="opportunity-progress-track" aria-label={`当前进度：${statusLabel[selectedOpportunity.status]}`}>
+                  {opportunityStatusFlow.map((status, index) => {
+                    const currentIndex = opportunityStatusFlow.indexOf(selectedOpportunity.status);
+                    const state = index < currentIndex ? "done" : index === currentIndex ? "current" : "next";
+                    return (
+                      <button
+                        key={status}
+                        className={`opportunity-progress-step ${state}`}
+                        onClick={() => applyOpportunityProgress(selectedOpportunity.id, status, "manual")}
+                      >
+                        <span>{index + 1}</span>
+                        <strong>{statusLabel[status]}</strong>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="opportunity-progress-note">
+                  {selectedOpportunity.status === "TO APPLY"
+                    ? "今日待办里点完成后，会同步标记为已投递。"
+                    : selectedOpportunity.status === "WRITTEN TEST"
+                      ? "完成笔试待办后，会推进到面试中。"
+                      : "阶段有变化时，可以直接点击上面的节点更新。"}
+                </p>
               </div>
               <div className="danger-zone">
                 <span>危险操作</span>
@@ -2406,335 +2592,357 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="surface">
-              <SectionTitle label="岗位进度" title="这条机会走到哪一步" action={statusLabel[selectedOpportunity.status]} />
-              <OpportunityPipelineView stages={selectedOpportunityPipeline} />
-              <div className="progress-controls">
-                <span>手动覆盖进度</span>
-                <div>
-                  {opportunityStatusFlow.map((status) => (
-                    <button
-                      key={status}
-                      className={selectedOpportunity.status === status ? "active-filter" : ""}
-                      onClick={() => applyOpportunityProgress(selectedOpportunity.id, status, "manual")}
-                    >
-                      {statusLabel[status]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="timeline-log">
-                <SectionTitle label="系统日志" title="系统和手动操作记录" action={`${selectedOpportunity.timeline.filter((item) => item.status === "done").length} DONE`} />
-                <div className="timeline timeline-real">
-                  {selectedOpportunity.timeline.map((event) => (
-                    <div className={`timeline-row ${event.status}`} key={event.id}>
-                      <span>{event.occurredAt}</span>
-                      <div>
-                        <strong>{event.title}</strong>
-                        <small>{event.detail}</small>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
           </section>
         )}
 
         {page === "interviews" && (
           <section className="interview-page">
-            <div className="surface interview-list-pane">
-              <PageIntro
-                label="面试复盘"
-                title="按场次管理每次面试"
-                detail="先选择一场面试，再点左侧问题。右侧会显示该问题的原回答、评价、推荐框架和具体回答表述，并且都可以编辑。"
-                action={`${interviewSessions.length} SESSIONS`}
-              />
+            {interviewView === "list" ? (
+              <div className="surface interview-list-pane interview-home-pane">
+                <PageIntro
+                  label="面试复盘"
+                  title="记录每一场面试"
+                  detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
+                  action={`${interviewSessions.length} 场面试`}
+                />
 
-              <div className="button-row tight-row">
-                <button className="primary-button" onClick={() => openComposer("interview")}>
-                  <Upload size={16} />
-                  <span>上传录音 / 文字稿</span>
-                </button>
-              </div>
-
-              <div className="interview-tabs">
-                {visibleInterviewSessions.map((session) => (
-                  <button key={session.id} className={session.id === selectedInterview.id ? "active-session" : ""} onClick={() => selectInterview(session.id)}>
-                    <strong>{session.company} / {session.round}</strong>
-                    <small>{session.role} · {session.date}</small>
-                  </button>
-                ))}
-              </div>
-
-              <div className="pager-row">
-                <button className="ghost-button compact-button" disabled={interviewPage === 0} onClick={() => setInterviewPage((pageIndex) => Math.max(0, pageIndex - 1))}>
-                  上一页
-                </button>
-                <span>{interviewPage + 1} / {interviewPageCount}</span>
-                <button className="ghost-button compact-button" disabled={interviewPage >= interviewPageCount - 1} onClick={() => setInterviewPage((pageIndex) => Math.min(interviewPageCount - 1, pageIndex + 1))}>
-                  下一页
-                </button>
-              </div>
-
-              <div className="interview-toolbar">
-                <span>{selectedInterview.qaPairs.length} 个问题</span>
-                <div className="mini-actions">
-                  <button className="secondary-button compact-button" onClick={addQaPair}>
-                    <Plus size={14} />
-                    <span>添加问题</span>
+                <div className="button-row tight-row">
+                  <button className="primary-button" onClick={() => openComposer("interview")}>
+                    <Upload size={16} />
+                    <span>导入面试复盘</span>
                   </button>
                 </div>
-              </div>
 
-              <div className="qa-list">
-                {selectedInterview.qaPairs.map((pair) => (
-                  <button className={`qa-card qa-card-button ${pair.weak ? "weak" : ""} ${pair.id === selectedQa.id ? "selected-qa" : ""}`} key={pair.id} onClick={() => setSelectedQaId(pair.id)}>
-                    <div>
-                      <span className="type-pill">{pair.type}</span>
-                      <h3>{pair.question}</h3>
-                      <p>{pair.critique}</p>
-                    </div>
-                    <div className="score">{pair.score}/5</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="surface review-editor">
-              <SectionTitle label={`${selectedInterview.company} / ${selectedInterview.round}`} title={selectedQa.question} action={selectedQa.weak ? "需练习" : "可复用"} />
-
-              <div className="draft-edit-grid interview-session-edit">
-                <label>
-                  <span>公司</span>
-                  <input value={selectedInterview.company} onChange={(event) => updateSelectedInterview({ company: event.target.value })} />
-                </label>
-                <label>
-                  <span>岗位</span>
-                  <input value={selectedInterview.role} onChange={(event) => updateSelectedInterview({ role: event.target.value })} />
-                </label>
-                <label>
-                  <span>轮次</span>
-                  <input value={selectedInterview.round} onChange={(event) => updateSelectedInterview({ round: event.target.value })} />
-                </label>
-                <label>
-                  <span>日期</span>
-                  <input value={selectedInterview.date} onChange={(event) => updateSelectedInterview({ date: event.target.value })} />
-                </label>
-                <label className="wide-field">
-                  <span>关联岗位</span>
-                  <select
-                    value={selectedInterview.opportunityId ?? ""}
-                    onChange={(event) => updateSelectedInterview({ opportunityId: event.target.value || undefined })}
-                  >
-                    <option value="">未关联岗位</option>
-                    {opportunities.map((opportunity) => (
-                      <option key={opportunity.id} value={opportunity.id}>
-                        {opportunity.company} / {opportunity.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <div className="source-panel compact-source">
-                <SectionTitle label="原始材料" title="对应这场面试的文件" action={`${selectedInterview.sourceFiles?.length ?? 0} FILES`} />
-                <div className="button-row source-panel-actions">
-                  <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={requestReparseSelectedInterview}>
-                    <RotateCcw size={14} />
-                    <span>{interviewReparseBusy ? "解析中..." : "重新解析问题"}</span>
-                  </button>
-                </div>
-                {interviewReparseNotice ? <p className="parse-inline-notice">{interviewReparseNotice}</p> : null}
-                <div className="source-list">
-                  {(selectedInterview.sourceFiles ?? []).map((file) => {
-                    const Icon = file.kind === "audio" ? FileAudio : FileText;
-                    const canPreview = Boolean(file.content || file.storageUri);
+                <div className="interview-card-grid">
+                  {visibleInterviewSessions.map((session) => {
+                    const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
                     return (
-                      <button
-                        className="source-item source-button file-source"
-                        key={file.id}
-                        disabled={!canPreview}
-                        onClick={() => (file.content ? setPreviewSessionFile(file) : openStoredFile(file.storageUri))}
-                      >
-                        <Icon size={18} />
-                        <div>
-                          <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
-                          <strong>{file.fileName}</strong>
-                          <small>
-                            {file.detail}
-                            {file.duration ? ` / ${file.duration}` : ""}
-                            {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
-                          </small>
+                      <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
+                        <div className="interview-card-topline">
+                          <span>{session.date}</span>
+                          <strong>{weakCount ? `${weakCount} 题待练` : "已整理"}</strong>
                         </div>
-                        <em>{file.uploadedAt}</em>
+                        <h3>{session.company}</h3>
+                        <p>{session.role} · {session.round}</p>
+                        <div className="interview-card-stats">
+                          <span>{session.qaPairs.length} 个问题</span>
+                          <span>{session.sourceFiles?.length ?? 0} 份材料</span>
+                          <ChevronRight size={16} />
+                        </div>
                       </button>
                     );
                   })}
                 </div>
-              </div>
 
-              <ReviewBlock label="记录原问题" value={selectedQa.question} readOnly />
-              <ReviewBlock
-                label="记录原回答"
-                value={selectedQa.originalAnswer}
-                onChange={(value) => updateSelectedQa("originalAnswer", value)}
-              />
-              <ReviewBlock
-                label="评价"
-                value={selectedQa.critique}
-                onChange={(value) => updateSelectedQa("critique", value)}
-              />
-              <ReviewBlock
-                label="推荐回答框架"
-                value={selectedQa.framework}
-                onChange={(value) => updateSelectedQa("framework", value)}
-              />
-              <ReviewBlock
-                label="具体回答表述"
-                value={selectedQa.optimizedAnswer}
-                onChange={(value) => updateSelectedQa("optimizedAnswer", value)}
-              />
-
-              <div className="button-row">
-                <button className="primary-button" onClick={createAnswerCard}>
-                  <BookOpenCheck size={16} />
-                  <span>生成答案卡</span>
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={addSelectedQaToPractice}
-                >
-                  <ClipboardList size={16} />
-                  <span>加入练习</span>
-                </button>
-                <button className="secondary-button" onClick={() => updateSelectedQaWeak(!selectedQa.weak)}>
-                  <Check size={16} />
-                  <span>{selectedQa.weak ? "标记已处理" : "重新标为薄弱"}</span>
-                </button>
-              </div>
-
-              <div className="danger-zone">
-                <span>危险操作</span>
-                <div className="mini-actions">
-                  <button
-                    className="destructive-button compact-button"
-                    onClick={() =>
-                      requestConfirm({
-                        title: "删除这个问题？",
-                        description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
-                        confirmLabel: "删除问题",
-                        onConfirm: deleteSelectedQa,
-                      })
-                    }
-                  >
-                    删除当前问题
+                <div className="pager-row">
+                  <button className="ghost-button compact-button" disabled={interviewPage === 0} onClick={() => setInterviewPage((pageIndex) => Math.max(0, pageIndex - 1))}>
+                    上一页
                   </button>
-                  <button
-                    className="destructive-button compact-button"
-                    onClick={() =>
-                      requestConfirm({
-                        title: "删除这场面试？",
-                        description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
-                        confirmLabel: "删除面试",
-                        onConfirm: deleteSelectedInterview,
-                      })
-                    }
-                  >
-                    删除整场面试
+                  <span>{interviewPage + 1} / {interviewPageCount}</span>
+                  <button className="ghost-button compact-button" disabled={interviewPage >= interviewPageCount - 1} onClick={() => setInterviewPage((pageIndex) => Math.min(interviewPageCount - 1, pageIndex + 1))}>
+                    下一页
                   </button>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="surface review-editor interview-detail-pane">
+                <div className="interview-detail-nav">
+                  <button className="ghost-button compact-button" onClick={() => setInterviewView("list")}>
+                    <ChevronLeft size={14} />
+                    <span>全部面试</span>
+                  </button>
+                  {interviewView === "question" ? (
+                    <button className="ghost-button compact-button" onClick={() => setInterviewView("session")}>
+                      <ChevronLeft size={14} />
+                      <span>问题目录</span>
+                    </button>
+                  ) : null}
+                </div>
+
+                {interviewView === "session" ? (
+                  <>
+                    <SectionTitle label={`${selectedInterview.date} / ${selectedInterview.round}`} title={`${selectedInterview.company} · ${selectedInterview.role}`} action={`${selectedInterview.qaPairs.length} 个问题`} />
+
+                    <div className="draft-edit-grid interview-session-edit">
+                      <label>
+                        <span>公司</span>
+                        <input value={selectedInterview.company} onChange={(event) => updateSelectedInterview({ company: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>岗位</span>
+                        <input value={selectedInterview.role} onChange={(event) => updateSelectedInterview({ role: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>轮次</span>
+                        <input value={selectedInterview.round} onChange={(event) => updateSelectedInterview({ round: event.target.value })} />
+                      </label>
+                      <label>
+                        <span>日期</span>
+                        <input value={selectedInterview.date} onChange={(event) => updateSelectedInterview({ date: event.target.value })} />
+                      </label>
+                      <label className="wide-field">
+                        <span>关联岗位</span>
+                        <select
+                          value={selectedInterview.opportunityId ?? ""}
+                          onChange={(event) => updateSelectedInterview({ opportunityId: event.target.value || undefined })}
+                        >
+                          <option value="">未关联岗位</option>
+                          {opportunities.map((opportunity) => (
+                            <option key={opportunity.id} value={opportunity.id}>
+                              {opportunity.company} / {opportunity.title}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="source-panel compact-source">
+                      <SectionTitle label="面试材料" title="这场面试的录音或文字稿" action={`${selectedInterview.sourceFiles?.length ?? 0} 份`} />
+                      <div className="button-row source-panel-actions">
+                        <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={requestReparseSelectedInterview}>
+                          <RotateCcw size={14} />
+                          <span>{interviewReparseBusy ? "整理中..." : "重新整理问题"}</span>
+                        </button>
+                      </div>
+                      {interviewReparseNotice ? <p className="parse-inline-notice">{interviewReparseNotice}</p> : null}
+                      <div className="source-list">
+                        {(selectedInterview.sourceFiles ?? []).map((file) => {
+                          const Icon = file.kind === "audio" ? FileAudio : FileText;
+                          const canPreview = Boolean(file.content || file.storageUri);
+                          return (
+                            <button
+                              className="source-item source-button file-source"
+                              key={file.id}
+                              disabled={!canPreview}
+                              onClick={() => (file.content ? setPreviewSessionFile(file) : openStoredFile(file.storageUri))}
+                            >
+                              <Icon size={18} />
+                              <div>
+                                <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
+                                <strong>{file.fileName}</strong>
+                                <small>
+                                  {file.detail}
+                                  {file.duration ? ` / ${file.duration}` : ""}
+                                  {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
+                                </small>
+                              </div>
+                              <em>{file.uploadedAt}</em>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="interview-toolbar">
+                      <span>问题目录</span>
+                      <div className="mini-actions">
+                        <button className="secondary-button compact-button" onClick={addQaPair}>
+                          <Plus size={14} />
+                          <span>添加问题</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="qa-list qa-directory-list">
+                      {selectedInterview.qaPairs.map((pair) => (
+                        <button className={`qa-card qa-card-button ${pair.weak ? "weak" : ""} ${pair.id === selectedQa.id ? "selected-qa" : ""}`} key={pair.id} onClick={() => openInterviewQuestion(pair.id)}>
+                          <div>
+                            <span className="type-pill">{pair.type}</span>
+                            <h3>{pair.question}</h3>
+                            <p>{pair.critique}</p>
+                          </div>
+                          <div className="score">{pair.score}/5</div>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="danger-zone">
+                      <span>危险操作</span>
+                      <button
+                        className="destructive-button compact-button"
+                        onClick={() =>
+                          requestConfirm({
+                            title: "删除这场面试？",
+                            description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
+                            confirmLabel: "删除面试",
+                            onConfirm: deleteSelectedInterview,
+                          })
+                        }
+                      >
+                        删除整场面试
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <SectionTitle label={`${selectedInterview.company} / ${selectedInterview.round}`} title={selectedQa.question} action={selectedQa.weak ? "需练习" : "可复用"} />
+                    <div className="interview-question-context">
+                      <span>{selectedInterview.role}</span>
+                      <span>{selectedInterview.date}</span>
+                      <span>{selectedQa.type}</span>
+                      <strong>{selectedQa.score}/5</strong>
+                    </div>
+
+                    <ReviewBlock label="面试问题" value={selectedQa.question} readOnly />
+                    <ReviewBlock
+                      label="我的原回答"
+                      value={selectedQa.originalAnswer}
+                      onChange={(value) => updateSelectedQa("originalAnswer", value)}
+                    />
+                    <ReviewBlock
+                      label="复盘建议"
+                      value={selectedQa.critique}
+                      onChange={(value) => updateSelectedQa("critique", value)}
+                    />
+                    <ReviewBlock
+                      label="推荐回答框架"
+                      value={selectedQa.framework}
+                      onChange={(value) => updateSelectedQa("framework", value)}
+                    />
+                    <ReviewBlock
+                      label="具体回答表述"
+                      value={selectedQa.optimizedAnswer}
+                      onChange={(value) => updateSelectedQa("optimizedAnswer", value)}
+                    />
+
+                    <div className="button-row">
+                      <button className="primary-button" onClick={createAnswerCard}>
+                        <BookOpenCheck size={16} />
+                        <span>生成答案卡</span>
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={addSelectedQaToPractice}
+                      >
+                        <ClipboardList size={16} />
+                        <span>加入练习</span>
+                      </button>
+                      <button className="secondary-button" onClick={() => updateSelectedQaWeak(!selectedQa.weak)}>
+                        <Check size={16} />
+                        <span>{selectedQa.weak ? "标记已处理" : "重新标为薄弱"}</span>
+                      </button>
+                    </div>
+
+                    <div className="danger-zone">
+                      <span>危险操作</span>
+                      <button
+                        className="destructive-button compact-button"
+                        onClick={() =>
+                          requestConfirm({
+                            title: "删除这个问题？",
+                            description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
+                            confirmLabel: "删除问题",
+                            onConfirm: deleteSelectedQa,
+                          })
+                        }
+                      >
+                        删除当前问题
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </section>
         )}
 
         {page === "answers" && (
           <section className="answer-workspace">
-            <div className="surface answer-list-pane">
-              <PageIntro
-                label="答案库"
-                title="可复用回答和手动准备都在这里"
-                detail="答案卡可以来自面试复盘，也可以手动创建。这里不再用“使用次数”做主要指标，而是看来源、适用岗位和练习状态。"
-                action={`${answerCards.length} CARDS`}
-              />
-              <div className="button-row tight-row">
-                <button className="primary-button" onClick={() => openComposer("answer")}>
-                  <Plus size={16} />
-                  <span>新增答案卡</span>
-                </button>
-                <button className="secondary-button" onClick={() => goTo("interviews")}>
-                  <FileAudio size={16} />
-                  <span>从复盘生成</span>
-                </button>
+            {answerView === "list" ? (
+              <div className="surface answer-list-pane answer-home-pane">
+                <PageIntro
+                  label="答案库"
+                  title="沉淀可复用回答"
+                  detail="把常见问题、回答框架和推荐表达整理成之后可以直接练习的答案卡。"
+                  action={`${answerCards.length} 张卡片`}
+                />
+                <div className="button-row tight-row">
+                  <button className="primary-button" onClick={() => openComposer("answer")}>
+                    <Plus size={16} />
+                    <span>新增答案卡</span>
+                  </button>
+                  <button className="secondary-button" onClick={() => goTo("interviews")}>
+                    <FileAudio size={16} />
+                    <span>从复盘生成</span>
+                  </button>
+                </div>
+                <div className="answer-list">
+                  {filteredAnswerCards.length === 0 ? (
+                    <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
+                  ) : (
+                    filteredAnswerCards.map((card) => (
+                      <button
+                        className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
+                        key={card.id}
+                        onClick={() => openAnswerCard(card.id)}
+                      >
+                        <div>
+                          <span className="type-pill">{card.type}</span>
+                          <h3>{card.question}</h3>
+                        </div>
+                        <small>{card.source} / {card.practiceStatus}</small>
+                        <ChevronRight size={16} />
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
-              <div className="answer-list">
-                {filteredAnswerCards.length === 0 ? (
-                  <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
-                ) : (
-                  filteredAnswerCards.map((card) => (
-                    <button
-                      className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
-                      key={card.id}
-                      onClick={() => setSelectedAnswerId(card.id)}
-                    >
-                      <span className="type-pill">{card.type}</span>
-                      <h3>{card.question}</h3>
-                      <small>{card.source} / {card.practiceStatus}</small>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
+            ) : (
+              <div className="surface answer-editor answer-detail-pane">
+                <div className="interview-detail-nav">
+                  <button className="ghost-button compact-button" onClick={() => setAnswerView("list")}>
+                    <ChevronLeft size={14} />
+                    <span>全部答案</span>
+                  </button>
+                </div>
+                <SectionTitle label={selectedAnswer.source} title={selectedAnswer.question} action={selectedAnswer.status} />
+                <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
+                <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
+                <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
+                <ReviewBlock label="适用岗位" value={selectedAnswer.relatedRoles} onChange={(value) => updateSelectedAnswer("relatedRoles", value)} />
+                <div className="inline-controls">
+                  <label>
+                    <span>状态</span>
+                    <select value={selectedAnswer.status} onChange={(event) => updateSelectedAnswer("status", event.target.value)}>
+                      <option value="DRAFT">草稿</option>
+                      <option value="ACTIVE">可复用</option>
+                      <option value="NEEDS PRACTICE">需要练习</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>练习状态</span>
+                    <select value={selectedAnswer.practiceStatus} onChange={(event) => updateSelectedAnswer("practiceStatus", event.target.value)}>
+                      <option value="未练习">未练习</option>
+                      <option value="练习中">练习中</option>
+                      <option value="可复用">可复用</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="button-row">
+                  <button className="secondary-button" onClick={addSelectedAnswerToPractice}>
+                    <ClipboardList size={16} />
+                    <span>加入训练计划</span>
+                  </button>
+                </div>
 
-            <div className="surface answer-editor">
-              <SectionTitle label={selectedAnswer.source} title={selectedAnswer.question} action={selectedAnswer.status} />
-              <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
-              <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
-              <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
-              <ReviewBlock label="适用岗位" value={selectedAnswer.relatedRoles} onChange={(value) => updateSelectedAnswer("relatedRoles", value)} />
-              <div className="inline-controls">
-                <label>
-                  <span>状态</span>
-                  <select value={selectedAnswer.status} onChange={(event) => updateSelectedAnswer("status", event.target.value)}>
-                    <option>DRAFT</option>
-                    <option>ACTIVE</option>
-                    <option>NEEDS PRACTICE</option>
-                  </select>
-                </label>
-                <label>
-                  <span>练习状态</span>
-                  <select value={selectedAnswer.practiceStatus} onChange={(event) => updateSelectedAnswer("practiceStatus", event.target.value)}>
-                    <option>未练习</option>
-                    <option>练习中</option>
-                    <option>可复用</option>
-                  </select>
-                </label>
+                <div className="danger-zone">
+                  <span>危险操作</span>
+                  <button
+                    className="destructive-button"
+                    onClick={() =>
+                      requestConfirm({
+                        title: "删除这张答案卡？",
+                        description: `「${selectedAnswer.question}」删除后无法恢复。`,
+                        confirmLabel: "删除卡片",
+                        onConfirm: deleteSelectedAnswer,
+                      })
+                    }
+                  >
+                    删除当前卡
+                  </button>
+                </div>
               </div>
-              <div className="button-row">
-                <button className="secondary-button" onClick={addSelectedAnswerToPractice}>
-                  <ClipboardList size={16} />
-                  <span>加入训练计划</span>
-                </button>
-              </div>
-
-              <div className="danger-zone">
-                <span>危险操作</span>
-                <button
-                  className="destructive-button"
-                  onClick={() =>
-                    requestConfirm({
-                      title: "删除这张答案卡？",
-                      description: `「${selectedAnswer.question}」删除后无法恢复。`,
-                      confirmLabel: "删除卡片",
-                      onConfirm: deleteSelectedAnswer,
-                    })
-                  }
-                >
-                  删除当前卡
-                </button>
-              </div>
-            </div>
+            )}
           </section>
         )}
 
@@ -2745,7 +2953,7 @@ function App() {
                 label="简历版本"
                 title="管理你上传的几份不同简历文件"
                 detail="这里存的是简历文件本身和它的定位。某个岗位实际用了哪版简历，会在岗位详情里作为投递记录出现。"
-                action={`${resumeList.length} FILES`}
+                action={`${resumeList.length} 份简历`}
               />
               <div className="button-row tight-row">
                 <button className="primary-button" onClick={addResumeVersion}>
@@ -2827,91 +3035,107 @@ function App() {
 
         {page === "weekly" && (
           <section className="weekly-workspace">
-            <div className="surface weekly-editor">
+            <div className="surface weekly-board">
               <PageIntro
                 label="训练计划"
-                title="目标方向 + 泛任务训练"
-                detail="岗位相关请去「岗位管理」添加 JD 和状态；面试问题请在「面试复盘」加入练习。这里保留投递目标、重点方向，以及练笔试、练英语、补材料等泛任务。"
-                action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} OPEN`}
+                title="安排本周要练的事"
+                detail="把笔试准备、面试表达、作品集整理和材料补充拆成可以完成的小任务。"
+                action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} 待完成`}
               />
-              <div className="weekly-linkage">
-                <div>
-                  <span>不要重复录入</span>
-                  <strong>具体岗位从岗位管理进入；具体面试问题从面试复盘进入，系统会自动汇总到今日待办。</strong>
+              <div className="weekly-overview">
+                <div className="weekly-progress-card">
+                  <span>本周投递</span>
+                  <strong>{submittedApplications}/{weeklyPlan.targetApplications}</strong>
+                  <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
                 </div>
-                <div>
-                  <span>适合放这里</span>
-                  <strong>练笔试、练英语、补作品集、整理简历卖点，以及本周投递目标和重点方向。</strong>
-                </div>
-              </div>
-              <div className="weekly-target-row">
-                <label>
-                  <span>系统统计已投递</span>
-                  <input
-                    type="number"
-                    value={submittedApplications}
-                    readOnly
-                  />
-                </label>
-                <label>
-                  <span>目标投递</span>
+                <label className="weekly-goal-card">
+                  <span>目标</span>
                   <input
                     type="number"
                     value={weeklyPlan.targetApplications}
                     onChange={(event) => updateWeeklyTargetApplications(Number(event.target.value))}
                   />
+                  <small>本周想投递多少个岗位</small>
                 </label>
               </div>
-              <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
 
-              <WeeklyTagEditor label="重点方向" values={weeklyPlan.focusDirections} onAdd={(value) => addWeeklyFocus("focusDirections", value)} onUse={promoteFocusToTask} />
-              <WeeklyTagEditor label="重点城市" values={weeklyPlan.focusCities} onAdd={(value) => addWeeklyFocus("focusCities", value)} onUse={promoteFocusToTask} />
-              <WeeklyTagEditor label="重点公司" values={weeklyPlan.focusCompanies} onAdd={(value) => addWeeklyFocus("focusCompanies", value)} onUse={promoteFocusToTask} />
-              <WeeklyTagEditor label="练习主题" values={weeklyPlan.practiceThemes} onAdd={(value) => addWeeklyFocus("practiceThemes", value)} onUse={promoteFocusToTask} />
-            </div>
-
-            <div className="surface weekly-task-pane">
-              <SectionTitle label="会进入今日待办" title="训练与杂项动作" action="CONNECTED" />
-              <button className="primary-button" onClick={addWeeklyTask}>
-                <Plus size={16} />
-                <span>添加训练 / 杂项动作</span>
-              </button>
-              <div className="weekly-task-list">
-                {weeklyPlan.tasks.map((task) => (
-                  <div className="weekly-task" key={task.id}>
-                    <span>{task.sourceLabel}</span>
-                    <small className="route-hint">{trainingTaskRouteLabel(task)}</small>
-                    <label className="weekly-priority-field">
-                      <span>今日优先级</span>
-                      <select value={task.level ?? "P2"} onChange={(event) => updateWeeklyTask(task.id, "level", event.target.value)}>
-                        <option value="P0">P0 - 今天必须处理</option>
-                        <option value="P1">P1 - 优先推进</option>
-                        <option value="P2">P2 - 正常练习</option>
-                        <option value="P3">P3 - 低优先维护</option>
-                      </select>
-                    </label>
-                    <input value={task.title} onChange={(event) => updateWeeklyTask(task.id, "title", event.target.value)} />
-                    <textarea value={task.detail} onChange={(event) => updateWeeklyTask(task.id, "detail", event.target.value)} />
-                    <button
-                      className={task.status === "done" ? "secondary-button compact-button" : "primary-button compact-button"}
-                      onClick={() => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
-                    >
-                      {task.status === "done" ? "重新打开" : "标记完成"}
-                    </button>
-                    <button
-                      className="destructive-button compact-button"
-                      onClick={() =>
-                        requestConfirm({
-                          title: "删除这条训练动作？",
-                          description: `「${task.title}」删除后不再出现在训练计划和今日待办。`,
-                          confirmLabel: "删除动作",
-                          onConfirm: () => deleteWeeklyTask(task.id),
-                        })
-                      }
-                    >
-                      删除动作
-                    </button>
-                  </div>
+              <div className="weekly-group-list">
+                {weeklyTaskGroups.map((group) => (
+                  <section className="weekly-task-group" key={group.id}>
+                    <div className="weekly-group-header">
+                      <div>
+                        <h3>{group.title}</h3>
+                        <p>{group.detail}</p>
+                      </div>
+                      <span>{group.tasks.length} 项</span>
+                    </div>
+                    <div className="weekly-examples">
+                      {group.examples.map((example) => (
+                        <small key={example}>{example}</small>
+                      ))}
+                    </div>
+                    <div className="weekly-task-list">
+                      {group.id === "practice" ? (
+                        <button
+                          className="weekly-add-card"
+                          onClick={() => addWeeklyTask({ title: "新的自主训练", detail: "例如：练一道笔试题，或整理一个项目表达。" })}
+                        >
+                          <Plus size={18} />
+                          <strong>添加动作</strong>
+                          <span>新增一张自主训练卡片</span>
+                        </button>
+                      ) : null}
+                      {group.tasks.map((task) => (
+                        <article className={`weekly-task ${task.status === "done" ? "is-done" : ""} ${weeklyEditingTaskId === task.id ? "is-editing" : ""}`} key={task.id}>
+                          <div className="weekly-task-header">
+                            <span>{task.status === "done" ? "已完成" : task.level ?? "P2"}</span>
+                            <small>{task.sourceLabel}</small>
+                          </div>
+                          {weeklyEditingTaskId === task.id ? (
+                            <>
+                              <input aria-label="动作标题" value={task.title} onChange={(event) => updateWeeklyTask(task.id, "title", event.target.value)} />
+                              <textarea aria-label="动作备注" value={task.detail} onChange={(event) => updateWeeklyTask(task.id, "detail", event.target.value)} />
+                              <select value={task.level ?? "P2"} onChange={(event) => updateWeeklyTask(task.id, "level", event.target.value)}>
+                                <option value="P0">今天必须做</option>
+                                <option value="P1">优先推进</option>
+                                <option value="P2">正常练习</option>
+                                <option value="P3">低优先</option>
+                              </select>
+                            </>
+                          ) : (
+                            <>
+                              <h3>{task.title}</h3>
+                              <p>{task.detail}</p>
+                            </>
+                          )}
+                          <div className="weekly-task-actions">
+                            <button className="weekly-card-action" onClick={() => setWeeklyEditingTaskId(weeklyEditingTaskId === task.id ? null : task.id)}>
+                              {weeklyEditingTaskId === task.id ? "收起" : "编辑"}
+                            </button>
+                            <button
+                              className="weekly-card-action is-primary"
+                              onClick={() => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
+                            >
+                              {task.status === "done" ? "重新打开" : "标记已完成"}
+                            </button>
+                            <button
+                              className="weekly-card-action is-danger"
+                              onClick={() =>
+                                requestConfirm({
+                                  title: "删除这条动作？",
+                                  description: `「${task.title}」删除后不再出现在训练计划里。`,
+                                  confirmLabel: "删除",
+                                  onConfirm: () => deleteWeeklyTask(task.id),
+                                })
+                              }
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             </div>
@@ -2921,21 +3145,21 @@ function App() {
         {page === "exports" && (
           <section className="surface">
             <PageIntro
-              label="设置导出"
-              title="本地数据的备份和导出"
-              detail="MVP 先保证数据和文件可带走；AI 配置先保存在本机浏览器，后续接真实解析服务时复用。"
-              action={isPublicDemo ? "PUBLIC DEMO" : isApiEnabled ? "LOCAL API" : "LOCAL MOCK"}
+              label="设置与备份"
+              title="管理数据和智能整理"
+              detail="在这里备份数据、导出复习材料，也可以选择是否开启智能整理能力。"
+              action={isPublicDemo ? "演示模式" : isApiEnabled ? "本地保存" : "浏览器保存"}
             />
             <div className="settings-grid">
-              <ExportAction icon={Archive} title="导出完整 JSON 备份" detail="包含数据和已保存的本地文件内容。" onClick={exportBackup} />
-              <ExportAction icon={Upload} title="导入 JSON 备份" detail="从备份文件恢复；本地 API 模式会写回 SQLite。" onClick={importBackupFromFile} />
-              <ExportAction icon={FileDown} title="导出答案卡" detail="下载 Markdown 复习材料。" onClick={exportAnswerCards} />
-              <ExportAction icon={PanelRight} title="导出面试复盘" detail="下载 QA、批评点和优化答案。" onClick={exportInterviewReviews} />
+              <ExportAction icon={Archive} title="备份全部数据" detail="保存岗位、面试、答案和简历记录。" onClick={exportBackup} />
+              <ExportAction icon={Upload} title="恢复备份" detail="从之前导出的备份文件恢复数据。" onClick={importBackupFromFile} />
+              <ExportAction icon={FileDown} title="导出答案卡" detail="下载一份方便复习的材料。" onClick={exportAnswerCards} />
+              <ExportAction icon={PanelRight} title="导出面试复盘" detail="下载问题、复盘建议和优化回答。" onClick={exportInterviewReviews} />
             </div>
             <div className="settings-panel">
-              <SectionTitle label="AI 设置" title="解析和转写配置" action={aiSettings.provider === "none" ? "MOCK" : aiSettings.provider.toUpperCase()} />
+              <SectionTitle label="智能整理" title="让系统帮你读材料" action={aiSettings.provider === "none" ? "未开启" : "已配置"} />
               <p>
-                默认使用本地确定性解析；本地 API 可读取 txt/md/PDF/DOCX 文本。切到 Assist 后会调用配置的 AI 做截图 OCR、录音转写和结构化解析，失败会自动回退。API Key 只存在本机浏览器，不写入 SQLite，也不会出现在 JSON 备份里。截图 OCR 需要 OpenAI 或 Anthropic 视觉模型；DeepSeek chat API 不支持直接读图。
+                默认可以直接读取文字文件。需要识别截图、转写录音或整理长文本时，可以在这里接入你自己的模型服务。
               </p>
               <div className="draft-edit-grid">
                 <label>
@@ -2948,51 +3172,51 @@ function App() {
                   </select>
                 </label>
                 <label>
-                  <span>模型名</span>
-                  <input value={aiSettings.model} onChange={(event) => updateAiSettings({ model: event.target.value })} placeholder="例如 gpt-4.1 / claude-sonnet" />
+                  <span>模型</span>
+                  <input value={aiSettings.model} onChange={(event) => updateAiSettings({ model: event.target.value })} placeholder="填写你常用的模型名称" />
                 </label>
                 <label>
-                  <span>文字 / JD / 简历解析</span>
+                  <span>文字材料整理</span>
                   <select value={aiSettings.parseMode} onChange={(event) => updateAiSettings({ parseMode: event.target.value as AiSettings["parseMode"] })}>
-                    <option value="mock">本地解析（txt/md/PDF/DOCX/文字稿规则）</option>
-                    <option value="assist">Assist：OCR + AI 结构化解析/面试复盘</option>
+                    <option value="mock">基础整理</option>
+                    <option value="assist">智能整理</option>
                   </select>
                 </label>
                 <label>
-                  <span>录音转写</span>
+                  <span>录音转文字</span>
                   <select value={aiSettings.transcriptionMode} onChange={(event) => updateAiSettings({ transcriptionMode: event.target.value as AiSettings["transcriptionMode"] })}>
-                    <option value="mock">继续使用本地模拟</option>
-                    <option value="assist">Assist：调用转写 API</option>
+                    <option value="mock">暂不启用</option>
+                    <option value="assist">启用转写</option>
                   </select>
                 </label>
                 <label className="wide-field">
-                  <span>API Key（本机保存）</span>
+                  <span>访问密钥（只保存在本机）</span>
                   <input
                     type="password"
                     value={aiSettings.apiKey}
                     onChange={(event) => updateAiSettings({ apiKey: event.target.value })}
-                    placeholder="不会导出到备份；公开 demo 不需要填写"
+                    placeholder="可选，只有开启智能整理时需要"
                   />
                 </label>
                 <label className="wide-field">
-                  <span>自定义 endpoint（可选）</span>
-                  <input value={aiSettings.endpoint} onChange={(event) => updateAiSettings({ endpoint: event.target.value })} placeholder="DeepSeek: https://api.deepseek.com ｜ OpenAI: https://api.openai.com/v1" />
+                  <span>服务地址（可选）</span>
+                  <input value={aiSettings.endpoint} onChange={(event) => updateAiSettings({ endpoint: event.target.value })} placeholder="使用自定义服务时填写" />
                 </label>
                 <label className="wide-field">
-                  <span>配置备注</span>
-                  <textarea value={aiSettings.notes} onChange={(event) => updateAiSettings({ notes: event.target.value })} placeholder="记录这个配置准备用来做什么，例如 JD OCR、面试转写、简历解析。" />
+                  <span>备注</span>
+                  <textarea value={aiSettings.notes} onChange={(event) => updateAiSettings({ notes: event.target.value })} placeholder="例如：用于整理面试文字稿或识别截图。" />
                 </label>
               </div>
               <div className="button-row">
-                <button className="primary-button" onClick={() => setSystemMessage("[AI SETTINGS SAVED]")}>
+                <button className="primary-button" onClick={() => setSystemMessage("设置已保存")}>
                   <Settings size={16} />
-                  <span>保存 AI 设置</span>
+                  <span>保存设置</span>
                 </button>
                 <button
                   className="secondary-button"
                   onClick={() => {
                     setAiSettings(defaultAiSettings);
-                    setSystemMessage("[AI SETTINGS RESET]");
+                    setSystemMessage("设置已重置");
                   }}
                 >
                   重置设置
@@ -3005,41 +3229,80 @@ function App() {
         {composer && (
           <div className="asset-preview" role="dialog" aria-modal="true">
             <div className="asset-preview-panel module-composer-panel">
+              <button className="modal-close-button" onClick={() => setComposer(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
               <SectionTitle
                 label={composerStep === "source" ? "步骤 1 / 2" : "步骤 2 / 2"}
                 title={
                   composer === "opportunity"
-                    ? "新增岗位 / 上传 JD"
+                    ? "新增岗位"
                     : composer === "interview"
                       ? "新增面试复盘"
                       : composer === "resume"
                         ? "上传简历版本"
                         : "新增答案卡"
                 }
-                action={composerStep === "source" ? "SOURCE" : "PARSED"}
+                action={composerStep === "source" ? "选择材料" : "确认内容"}
               />
               <p>
                 {composerStep === "source"
-                  ? "先选择原始文件，或直接粘贴文字内容。txt/md/PDF/DOCX 会优先提取文本；截图 OCR 和录音转写需要在设置里开启 Assist。"
-                  : "系统已经生成字段草稿。你只需要检查自动解析结果，并补齐必填字段或可选备注，然后创建正式记录。"}
+                  ? composer === "interview"
+                    ? "选择你现在手里的材料：已经整理好的复盘文档可以直接导入；只有原始转写稿时，可以让系统帮你整理。"
+                    : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
+                  : "请检查整理结果，补齐必要信息后保存。"}
               </p>
 
               <div className="composer-steps">
-                <span className={composerStep === "source" ? "active-step" : ""}>01 原始材料</span>
-                <span className={composerStep === "review" ? "active-step" : ""}>02 解析与补齐</span>
+                <span className={composerStep === "source" ? "active-step" : ""}>01 选择材料</span>
+                <span className={composerStep === "review" ? "active-step" : ""}>02 确认内容</span>
               </div>
 
               {composerStep === "source" && composer !== "answer" && (
                 <div className="composer-source-grid">
+                  {composer === "interview" && (
+                    <div className="interview-import-mode wide-field">
+                      <button
+                        className={interviewInputMode === "review-json" ? "active-import-mode" : ""}
+                        onClick={() => {
+                          setInterviewInputMode("review-json");
+                          setComposerSource((source) => ({ ...source, sourceKind: "transcript", fileName: "", storageUri: undefined, extractionStatus: undefined }));
+                          setComposerParseNotice("");
+                        }}
+                      >
+                        <strong>我已经整理好了</strong>
+                        <span>粘贴或上传复盘文档，直接生成面试复盘</span>
+                      </button>
+                      <button
+                        className={interviewInputMode === "raw-transcript" ? "active-import-mode" : ""}
+                        onClick={() => {
+                          setInterviewInputMode("raw-transcript");
+                          setComposerSource((source) => ({ ...source, sourceKind: "transcript", extractionStatus: undefined }));
+                          setComposerParseNotice("");
+                        }}
+                      >
+                        <strong>帮我整理文字稿</strong>
+                        <span>粘贴原始转写稿，让系统先整理问题</span>
+                      </button>
+                    </div>
+                  )}
+
                   <label className="upload-dropzone">
                     <Upload size={22} />
-                    <strong>{composerSource.fileName || "选择文件"}</strong>
+                    <strong>
+                      {composerSource.fileName ||
+                        (composer === "interview" && interviewInputMode === "review-json"
+                          ? "上传复盘文档"
+                          : "选择文件")}
+                    </strong>
                     <small>
                       {composer === "opportunity"
-                        ? "支持 JD 截图/PDF/文本；PDF 文本本地提取，截图可用 Assist OCR。"
+                        ? "支持岗位描述截图、PDF 或文本。"
                         : composer === "interview"
-                          ? "支持录音和 txt/md/docx 文字稿；录音可用 Assist 转写。"
-                          : "支持 PDF / DOCX / 图片 / 文本；PDF/DOCX 本地提取，图片简历可用 Assist OCR。"}
+                          ? interviewInputMode === "review-json"
+                            ? "支持 .json / .txt / .md。内容需要是已整理好的复盘格式。"
+                            : "支持录音和文字稿。"
+                          : "支持 PDF / DOCX / 图片 / 文本。"}
                     </small>
                     <small>{uploadStatusLabel(composerSource)}</small>
                     {composerSource.extractionStatus && <small>{extractionStatusLabel(composerSource.extractionStatus)}</small>}
@@ -3049,7 +3312,9 @@ function App() {
                         composer === "opportunity"
                           ? "image/*,.pdf,.txt,.md"
                           : composer === "interview"
-                            ? "audio/*,.txt,.md,.docx"
+                            ? interviewInputMode === "review-json"
+                              ? ".json,.txt,.md"
+                              : "audio/*,.txt,.md,.docx"
                             : "image/*,.pdf,.txt,.md,.docx"
                       }
                       onChange={(event) => handleComposerFileSelected(event.target.files)}
@@ -3057,13 +3322,14 @@ function App() {
                   </label>
 
                   <div className="source-side">
+                    {!(composer === "interview" && interviewInputMode === "review-json") && (
                     <label>
                       <span>材料类型</span>
                       <select value={composerSource.sourceKind} onChange={(event) => updateComposerSource("sourceKind", event.target.value)}>
                         {composer === "opportunity" && (
                           <>
-                            <option value="jd-text">文字 JD / PDF</option>
-                            <option value="screenshot">JD 截图</option>
+                            <option value="jd-text">岗位描述 / 文件</option>
+                            <option value="screenshot">岗位截图</option>
                             <option value="job-link">招聘链接</option>
                           </>
                         )}
@@ -3076,18 +3342,25 @@ function App() {
                         {composer === "resume" && <option value="resume-file">简历文件</option>}
                       </select>
                     </label>
+                    )}
                     <label>
                       <span>备注（可选）</span>
-                      <input value={composerSource.note} onChange={(event) => updateComposerSource("note", event.target.value)} placeholder="来源、轮次、重点方向等" />
+                      <input
+                        value={composerSource.note}
+                        onChange={(event) => updateComposerSource("note", event.target.value)}
+                        placeholder={composer === "interview" ? "公司、岗位、轮次，或这次复盘重点" : "来源、轮次、重点方向等"}
+                      />
                     </label>
                   </div>
 
                   <label className="wide-field source-text-input">
                     <span>
                       {composer === "opportunity"
-                        ? "JD 文字内容（可选）"
+                        ? "岗位描述（可选）"
                         : composer === "interview"
-                          ? "面试文字稿 / 录音转写（可选）"
+                          ? interviewInputMode === "review-json"
+                            ? "整理好的复盘内容"
+                            : "原始录音转写稿"
                           : "简历文字或补充说明（可选）"}
                     </span>
                     <textarea
@@ -3095,13 +3368,39 @@ function App() {
                       onChange={(event) => updateComposerSource("rawText", event.target.value)}
                       placeholder={
                         composer === "opportunity"
-                          ? "粘贴 JD 后可以立即生成岗位草稿；PDF/DOCX 会本地提取文字，截图需要开启 Assist OCR。"
+                          ? "粘贴岗位描述后，可以继续确认岗位信息。"
                           : composer === "interview"
-                            ? "粘贴录音转写或面试文字稿后可以拆分 QA；上传 txt/md/docx 也会尝试自动读取。"
-                            : "粘贴简历摘要或正文后可以生成版本草稿；PDF/DOCX 会尝试自动读取，旧 .doc 请另存为 .docx。"
+                            ? interviewInputMode === "review-json"
+                              ? "把外部工具整理好的复盘粘贴到这里。内容应包含原问题、原回答、评价、优化框架、优化回答。"
+                              : "把未整理的面试转写稿粘贴到这里。"
+                            : "粘贴简历摘要或正文后，可以继续确认简历信息。"
                       }
                     />
                   </label>
+                  {composer === "interview" && interviewInputMode === "review-json" && (
+                    <div className="wide-field interview-json-guide">
+                      <div>
+                        <strong>还没有整理？可以先复制整理模板</strong>
+                        <span>把面试文字稿贴到常用 AI 工具里整理，再把结果粘回上面的输入框。</span>
+                      </div>
+                      <textarea readOnly value={interviewReviewJsonPrompt} />
+                      <button
+                        className="secondary-button compact-button"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(interviewReviewJsonPrompt);
+                          setSystemMessage("整理模板已复制");
+                        }}
+                      >
+                        复制整理模板
+                      </button>
+                    </div>
+                  )}
+                  {composer === "interview" && interviewInputMode === "raw-transcript" && (
+                    <div className="wide-field interview-raw-guide">
+                      <strong>这个入口适合还没复盘的原始稿</strong>
+                      <span>系统会先帮你拆出问题和原回答；如果开启智能整理，还会补充复盘建议和优化回答。</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3168,11 +3467,11 @@ function App() {
                       <input value={composerDraft.sourceLabel} onChange={(event) => updateComposerDraft("sourceLabel", event.target.value)} />
                     </label>
                     <label className="wide-field">
-                      <span>下一步动作</span>
+                      <span>备注</span>
                       <input value={composerDraft.nextAction} onChange={(event) => updateComposerDraft("nextAction", event.target.value)} />
                     </label>
                     <label className="wide-field">
-                      <span>JD 原文 *</span>
+                      <span>岗位描述 *</span>
                       <textarea value={composerDraft.sourceText} onChange={(event) => updateComposerDraft("sourceText", event.target.value)} />
                     </label>
                   </>
@@ -3210,7 +3509,7 @@ function App() {
                       <input value={composerDraft.fileName} onChange={(event) => updateComposerDraft("fileName", event.target.value)} placeholder="recording.m4a 或 transcript.txt" />
                     </label>
                     <label className="wide-field">
-                      <span>原录音转写 / 面试文字稿</span>
+                      <span>面试文字稿 / 复盘内容</span>
                       <textarea value={composerDraft.sourceText} onChange={(event) => updateComposerDraft("sourceText", event.target.value)} />
                     </label>
                   </>
@@ -3275,7 +3574,15 @@ function App() {
                   <button className="primary-button" onClick={runComposerParse} disabled={!canRunSourceParse(composerSource) || composerParsing}>
                     <Sparkles size={16} />
                     <span>
-                      {composerParsing ? "正在解析..." : canRunSourceParse(composerSource) ? "开始解析" : uploadStatusLabel(composerSource)}
+                      {composerParsing
+                        ? "正在处理..."
+                        : canRunSourceParse(composerSource)
+                          ? composer === "interview" && interviewInputMode === "review-json"
+                            ? "导入复盘"
+                            : composer === "interview"
+                              ? "开始整理"
+                              : "开始整理"
+                          : uploadStatusLabel(composerSource)}
                     </span>
                   </button>
                 ) : (
@@ -3287,7 +3594,6 @@ function App() {
                 {composerStep === "review" && composer !== "answer" && (
                   <button className="secondary-button" onClick={() => setComposerStep("source")}>返回材料</button>
                 )}
-                <button className="ghost-button" onClick={() => setComposer(null)}>取消</button>
               </div>
             </div>
           </div>
@@ -3296,6 +3602,9 @@ function App() {
         {previewAsset && (
           <div className="asset-preview" role="dialog" aria-modal="true">
             <div className="asset-preview-panel">
+              <button className="modal-close-button" onClick={() => setPreviewAsset(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
               <SectionTitle label={sourceKindLabel[previewAsset.kind]} title={previewAsset.title} action={previewAsset.createdAt} />
               <p>{previewAsset.detail}</p>
               <textarea readOnly value={previewAsset.content || "当前原材料只有元信息。若该材料来自文件上传，可以点击下方打开原文件。"} />
@@ -3306,7 +3615,6 @@ function App() {
                 {previewAsset.kind === "job-link" && previewAsset.content?.startsWith("http") && (
                   <button className="secondary-button" onClick={() => window.open(previewAsset.content, "_blank", "noopener,noreferrer")}>打开链接</button>
                 )}
-                <button className="primary-button" onClick={() => setPreviewAsset(null)}>关闭预览</button>
               </div>
             </div>
           </div>
@@ -3315,6 +3623,9 @@ function App() {
         {previewSessionFile && (
           <div className="asset-preview" role="dialog" aria-modal="true">
             <div className="asset-preview-panel">
+              <button className="modal-close-button" onClick={() => setPreviewSessionFile(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
               <SectionTitle
                 label={previewSessionFile.kind === "audio" ? "原录音" : "文字稿"}
                 title={previewSessionFile.fileName}
@@ -3326,7 +3637,6 @@ function App() {
                 {previewSessionFile.storageUri && (
                   <button className="secondary-button" onClick={() => openStoredFile(previewSessionFile.storageUri)}>打开原文件</button>
                 )}
-                <button className="primary-button" onClick={() => setPreviewSessionFile(null)}>关闭预览</button>
               </div>
             </div>
           </div>
@@ -3340,15 +3650,15 @@ function App() {
             onClick={() => setConfirmDialog(null)}
           >
             <div className="asset-preview-panel confirm-panel" onClick={(event) => event.stopPropagation()}>
+              <button className="modal-close-button" onClick={() => setConfirmDialog(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
               <div className="section-title">
                 <span>确认删除</span>
                 <h2>{confirmDialog.title}</h2>
               </div>
               <p>{confirmDialog.description}</p>
               <div className="button-row confirm-actions">
-                <button className="secondary-button" onClick={() => setConfirmDialog(null)}>
-                  取消
-                </button>
                 <button
                   className="destructive-button"
                   onClick={() => {
@@ -3393,26 +3703,26 @@ function SectionTitle({ label, title, action }: { label: string; title: string; 
 function ApiModeBadge({ apiMode, onRefresh }: { apiMode: ApiModeState; onRefresh: () => void }) {
   const label =
     apiMode.status === "online"
-      ? "API ONLINE"
+      ? "已连接"
       : apiMode.status === "checking"
-        ? "CHECKING API"
+        ? "检查中"
         : apiMode.status === "offline"
-          ? "API OFFLINE"
+          ? "未连接"
           : apiMode.status === "demo"
-            ? "PUBLIC DEMO"
-            : "LOCAL MOCK";
+            ? "演示模式"
+            : "本机模式";
   const detail =
     apiMode.status === "online"
       ? apiMode.dbPath
-        ? "SQLite 已连接"
-        : `API: ${apiBaseUrl}`
+        ? "数据会保存在本机"
+        : "数据服务已可用"
       : apiMode.status === "offline"
-        ? "当前使用 mock 数据"
+        ? "当前使用浏览器数据"
         : apiMode.status === "demo"
-          ? "公开演示数据，不连接本地库"
+          ? "当前是演示数据"
           : apiMode.status === "mock"
-            ? "未连接本地 API"
-            : apiBaseUrl;
+            ? "数据保存在浏览器中"
+            : "正在检查保存方式";
 
   return (
     <div className={`api-mode-badge ${apiMode.status}`} title={apiMode.dbPath || apiBaseUrl}>
@@ -3422,7 +3732,7 @@ function ApiModeBadge({ apiMode, onRefresh }: { apiMode: ApiModeState; onRefresh
       </div>
       {apiMode.checkedAt && <em>{apiMode.checkedAt}</em>}
       <button className="mini-button" onClick={onRefresh} disabled={apiMode.status === "checking"}>
-        重新检查
+        刷新
       </button>
     </div>
   );
@@ -3433,35 +3743,6 @@ function StatRow({ label, value }: { label: string; value: string | number }) {
     <div className="stat-row">
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
-  );
-}
-
-function OpportunityPipelineView({ stages }: { stages: PipelineStage[] }) {
-  return (
-    <div className="opportunity-pipeline">
-      {stages.map((stage, index) => (
-        <div className={`pipeline-stage ${stage.state}`} key={stage.key}>
-          <span className="pipeline-index">{String(index + 1).padStart(2, "0")}</span>
-          <div>
-            <div className="pipeline-title-row">
-              <strong>{stage.label}</strong>
-              <em>{stage.source === "system" ? "SYSTEM" : "MANUAL"}</em>
-            </div>
-            <small>{stage.detail}</small>
-            {stage.subItems && stage.subItems.length > 0 && (
-              <div className="pipeline-subitems">
-                {stage.subItems.map((item) => (
-                  <span className={item.state} key={`${stage.key}-${item.label}-${item.detail}`}>
-                    <b>{item.label}</b>
-                    <small>{item.detail}</small>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

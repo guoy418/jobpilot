@@ -143,6 +143,8 @@ export const deleteQaPairApi = (id: string): Promise<{ ok: boolean; id: string }
 export const createOpportunityApi = (opportunity: Opportunity): Promise<Opportunity> =>
   sendJson<Opportunity>("/api/opportunities", "POST", opportunity);
 
+export const getOpportunitiesApi = (): Promise<Opportunity[]> => getJson<Opportunity[]>("/api/opportunities");
+
 export const updateOpportunityApi = (id: string, patch: Partial<Opportunity>): Promise<Opportunity> =>
   sendJson<Opportunity>(`/api/opportunities/${encodeURIComponent(id)}`, "PATCH", patch);
 

@@ -20,7 +20,7 @@ export const statusLabel: Record<OpportunityStatus, string> = {
 };
 
 export const sourceKindLabel: Record<SourceAsset["kind"], string> = {
-  "jd-text": "JD 原文",
+  "jd-text": "岗位描述",
   "job-link": "招聘链接",
   screenshot: "页面截图",
   "referral-note": "内推记录",

@@ -886,22 +886,6 @@ export const createRepository = (db) => {
       nextAction,
       timeline: nextTimeline,
     });
-    if (status === "APPLIED" && !submittedStatuses.includes(current.status)) {
-      const existingFollowupTask = db
-        .prepare("SELECT id FROM weekly_tasks WHERE source = ? AND related_entity_id = ? LIMIT 1")
-        .get("opportunity", id);
-      if (!existingFollowupTask) {
-        createWeeklyTask({
-          title: `跟进${updatedOpportunity.company}${updatedOpportunity.title}`,
-          detail: "投递后自动生成的跟进动作，避免投完就丢。",
-          source: "opportunity",
-          sourceLabel: "岗位管理",
-          relatedEntityId: id,
-          level: "P1",
-          status: "open",
-        });
-      }
-    }
     return updatedOpportunity;
   };
 
@@ -1016,6 +1000,18 @@ export const createRepository = (db) => {
     );
 
     (input.qaPairs ?? []).forEach((pair) => createQaPair(id, pair));
+    if (input.opportunityId && getOpportunity(input.opportunityId)) {
+      addOpportunityProgress(input.opportunityId, {
+        status: "WAITING",
+        timelineEvent: {
+          id: makeId("TL"),
+          occurredAt: "Now",
+          title: "进度更新为等结果",
+          detail: `新增${input.round?.trim() || "面试"}面试复盘后自动推进`,
+          status: "done",
+        },
+      });
+    }
     return getInterview(id);
   };
 
@@ -1440,7 +1436,7 @@ export const createRepository = (db) => {
     };
 
     const opportunityActions = opportunities
-      .filter((item) => item.status !== "OFFER")
+      .filter((item) => item.status === "TO APPLY" || item.status === "WRITTEN TEST" || item.status === "INTERVIEWING")
       .map((item) => ({
         level: computeOpportunityAction(item),
         title:
@@ -1473,7 +1469,7 @@ export const createRepository = (db) => {
       }));
 
     const weeklyActions = (weeklyPlan?.tasks ?? [])
-      .filter((task) => task.status === "open")
+      .filter((task) => task.status === "open" && task.source !== "opportunity")
       .map((task) => ({
         level: task.level || "P2",
         title: task.title,

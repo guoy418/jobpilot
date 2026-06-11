@@ -115,10 +115,10 @@ const parsedInterview = await fetch(`${API_URL}/api/parse/interview`, {
 });
 if (!parsedInterview.ok) throw new Error(`POST /api/parse/interview returned ${parsedInterview.status}`);
 const parsedInterviewPayload = await parsedInterview.json();
-if (parsedInterviewPayload.company !== "小红书" || parsedInterviewPayload.round !== "二面" || !Array.isArray(parsedInterviewPayload.qaPairs) || parsedInterviewPayload.qaPairs.length < 1) {
-  throw new Error("POST /api/parse/interview returned unexpected payload");
+if (parsedInterviewPayload.extractionStatus !== "ai-not-configured" || parsedInterviewPayload.qaPairs?.length !== 0) {
+  throw new Error("POST /api/parse/interview raw transcript should require AI");
 }
-console.log("PASS POST /api/parse/interview");
+console.log("PASS POST /api/parse/interview requires AI");
 
 const parsedNaturalInterview = await fetch(`${API_URL}/api/parse/interview`, {
   method: "POST",
@@ -131,10 +131,51 @@ const parsedNaturalInterview = await fetch(`${API_URL}/api/parse/interview`, {
 });
 if (!parsedNaturalInterview.ok) throw new Error(`POST /api/parse/interview natural transcript returned ${parsedNaturalInterview.status}`);
 const parsedNaturalInterviewPayload = await parsedNaturalInterview.json();
-if (!Array.isArray(parsedNaturalInterviewPayload.qaPairs) || parsedNaturalInterviewPayload.qaPairs.length < 2) {
-  throw new Error("POST /api/parse/interview did not split multiple natural-language questions");
+if (parsedNaturalInterviewPayload.extractionStatus !== "ai-not-configured" || parsedNaturalInterviewPayload.qaPairs?.length !== 0) {
+  throw new Error("POST /api/parse/interview natural transcript should require AI");
 }
-console.log("PASS POST /api/parse/interview natural QA split");
+console.log("PASS POST /api/parse/interview natural transcript requires AI");
+
+const parsedInterviewJson = await fetch(`${API_URL}/api/parse/interview`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    rawText: JSON.stringify({
+      schemaVersion: "InterviewReviewJSON v1",
+      company: "测试公司",
+      role: "前端实习生",
+      round: "一面",
+      date: "Today",
+      qaPairs: Array.from({ length: 30 }, (_, index) => ({
+        question: `第 ${index + 1} 个问题：介绍一个你做过的项目？`,
+        originalAnswer: "我做了 JobPilot MVP。",
+        evaluation: index === 0 ? "回答有项目名，但缺少指标和取舍。" : "回答需要补充更多结果和复盘。",
+        improvedFramework: "背景 -> 目标 -> 动作 -> 结果 -> 复盘",
+        polishedAnswer: "我在 JobPilot MVP 中负责把岗位、面试和答案库串成闭环。",
+        questionType: "PROJECT",
+      })),
+    }),
+    fileName: "interview-review.json",
+    sourceKind: "transcript",
+    aiSettings: {
+      provider: "custom",
+      endpoint: "http://127.0.0.1:9/v1/chat/completions",
+      apiKey: "should-not-be-used",
+      model: "test-model",
+    },
+  }),
+});
+if (!parsedInterviewJson.ok) throw new Error(`POST /api/parse/interview JSON import returned ${parsedInterviewJson.status}`);
+const parsedInterviewJsonPayload = await parsedInterviewJson.json();
+if (
+  parsedInterviewJsonPayload.extractionStatus !== "interview-json" ||
+  parsedInterviewJsonPayload.aiStatus !== "not-used" ||
+  parsedInterviewJsonPayload.qaPairs?.length !== 30 ||
+  parsedInterviewJsonPayload.qaPairs?.[0]?.critique !== "回答有项目名，但缺少指标和取舍。"
+) {
+  throw new Error("POST /api/parse/interview did not import InterviewReviewJSON v1 locally");
+}
+console.log("PASS POST /api/parse/interview JSON import");
 
 const parsedResume = await fetch(`${API_URL}/api/parse/resume`, {
   method: "POST",
@@ -209,7 +250,7 @@ await withMockAiServer(
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString("utf8");
-    if (body.includes("面试逐字稿")) {
+    if (body.includes("面试稿片段")) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -226,11 +267,27 @@ await withMockAiServer(
                       question: "介绍一个你推进过的项目。",
                       originalAnswer: "我做了 JobPilot。",
                       type: "PROJECT",
+                      score: 2,
+                      critique: "回答过短，只说明做过项目，没有交代用户痛点、目标、个人职责、关键取舍和结果指标。",
+                      weak: true,
+                      framework: "先说明 JobPilot 解决的真实求职管理痛点；再讲自己负责的核心闭环和个人职责；接着展开关键动作和取舍；最后用结果和后续评测计划收束。",
+                      optimizedAnswer: "我推进的是 JobPilot，一个面向个人求职管理的本地优先工具。背景是岗位、面试复盘和答案库分散，用户很难形成每日行动。我先把核心目标定为打通岗位录入、面试复盘和今日待办闭环。",
+                      sourceChunkId: "chunk-1",
+                      isPartial: false,
+                      boundaryNote: "",
                     },
                     {
                       question: "如果用户不按流程上传材料怎么办？",
                       originalAnswer: "我会增加状态提示。",
                       type: "PRODUCT",
+                      score: 3,
+                      critique: "方向正确，但缺少对异常路径的分层，例如文件未上传、模型未配置、解析失败和用户只想粘贴文字的不同处理。",
+                      weak: true,
+                      framework: "先把异常路径按用户当前目标拆开；再说明每类异常给什么最小可恢复动作；接着强调反馈要出现在当前弹窗而不是隐藏在系统状态里。",
+                      optimizedAnswer: "我会先把异常路径拆开：没有文件、文件只在浏览器、API 未连接、模型未配置、模型调用失败。每种情况都给用户一个最小可恢复动作。",
+                      sourceChunkId: "chunk-1",
+                      isPartial: false,
+                      boundaryNote: "",
                     },
                   ],
                 }),
@@ -253,18 +310,18 @@ await withMockAiServer(
           {
             message: {
               content: JSON.stringify({
-                question: body.includes("不按流程上传材料") ? "如果用户不按流程上传材料怎么办？" : "介绍一个你推进过的项目。",
-                originalAnswer: body.includes("不按流程上传材料") ? "我会增加状态提示。" : "我做了 JobPilot。",
-                type: body.includes("不按流程上传材料") ? "PRODUCT" : "PROJECT",
-                score: body.includes("不按流程上传材料") ? 3 : 2,
-                critique: body.includes("不按流程上传材料")
+                question: body.includes("原问题:\\n如果用户不按流程上传材料") ? "如果用户不按流程上传材料怎么办？" : "介绍一个你推进过的项目。",
+                originalAnswer: body.includes("原问题:\\n如果用户不按流程上传材料") ? "我会增加状态提示。" : "我做了 JobPilot。",
+                type: body.includes("原问题:\\n如果用户不按流程上传材料") ? "PRODUCT" : "PROJECT",
+                score: body.includes("原问题:\\n如果用户不按流程上传材料") ? 3 : 2,
+                critique: body.includes("原问题:\\n如果用户不按流程上传材料")
                   ? "方向正确，但缺少对异常路径的分层，例如文件未上传、模型未配置、解析失败和用户只想粘贴文字的不同处理。"
                   : "回答过短，只说明做过项目，没有交代用户痛点、目标、个人职责、关键取舍和结果指标。",
                 weak: true,
-                framework: body.includes("不按流程上传材料")
+                framework: body.includes("原问题:\\n如果用户不按流程上传材料")
                   ? "先把异常路径按用户当前目标拆开；再说明每类异常给什么最小可恢复动作；接着强调反馈要出现在当前弹窗而不是隐藏在系统状态里；最后说明这样能保护数据质量，避免失败结果被写入正式记录。"
                   : "先说明 JobPilot 解决的真实求职管理痛点；再讲自己负责的核心闭环和个人职责；接着展开关键取舍，例如先做持久化和任务联动，再接入 OCR 与 AI 复盘；最后用结果和后续评测计划收束。",
-                optimizedAnswer: body.includes("不按流程上传材料")
+                optimizedAnswer: body.includes("原问题:\\n如果用户不按流程上传材料")
                   ? "我会先把异常路径拆开：没有文件、文件只在浏览器、API 未连接、模型未配置、模型调用失败。每种情况都给用户一个最小可恢复动作，例如等待文件保存、改用粘贴文字、切换 Assist 或检查 endpoint。界面上不只在侧边栏显示状态，而是在当前弹窗里给明确错误和下一步建议。这样用户不会觉得按钮没反应，同时也能避免把失败的 AI 输出直接写成正式记录。"
                   : "我推进的是 JobPilot，一个面向个人求职管理的本地优先工具。背景是岗位、面试复盘和答案库分散，用户很难形成每日行动。我先把核心目标定为打通岗位录入、面试复盘和今日待办闭环，负责梳理数据模型、解析入口和任务联动。过程中我没有一开始追求完整 AI，而是先保证本地持久化和可回滚，再逐步接入 OCR、文字解析和复盘生成。结果是用户可以从真实 JD 或文字稿生成可确认的记录，并在今日待办里看到下一步动作。复盘来看，后续我会补更明确的解析失败反馈和真实样本评测。",
               }),
@@ -310,23 +367,147 @@ await withMockAiServer(
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString("utf8");
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (body.includes("上一轮单题复盘输出不是 JSON")) {
+    if (body.includes("面试稿片段")) {
+      const isCacheChunk = body.includes("缓存策略") && !body.includes("用户行为埋点");
       res.end(
         JSON.stringify({
           choices: [
             {
               message: {
                 content: JSON.stringify({
-                  question: "讲一次你主动发现并解决问题的经历",
-                  originalAnswer: "我提到了自己做过 JobPilot，但展开不足。",
-                  type: "BEHAVIORAL",
-                  score: 3,
-                  critique: "回答有项目方向，但缺少背景、关键动作、结果指标和复盘。",
-                  weak: true,
-                  framework:
-                    "先说明问题出现的真实业务场景和影响面；再讲自己如何记录、分类、下钻分析并找到共性原因；接着说明如何推动相关方落地，包括沟通、取舍和优先级；最后用结果指标和个人复盘收束。",
-                  optimizedAnswer:
-                    "我可以讲 JobPilot 这个项目。最开始我发现自己的求职材料、岗位状态、面试复盘和答案练习分散在不同地方，很难形成稳定的行动闭环。所以我把目标定为做一个本地优先的求职管理工具，先打通岗位录入、面试复盘、答案库和今日待办。\n\n在推进过程中，我不是一开始追求完整功能，而是先保证真实数据可以落地，包括 SQLite 持久化、文件上传、JD/文字稿解析和任务联动。之后再逐步接入 OCR 和 AI 面试复盘，让系统能从真实材料里生成可确认的记录。\n\n这个经历让我最大的收获是，产品不只是把功能做出来，而是要围绕用户的真实流程，把信息输入、结构化、复盘和下一步行动连起来。",
+                  company: "小红书",
+                  role: "前端实习生",
+                  round: "技术面",
+                  date: "Today",
+                  qaPairs: [
+                    isCacheChunk
+                      ? {
+                          question: "你怎么设计前端缓存策略？",
+                          originalAnswer: "我会区分接口缓存、静态资源缓存和本地状态缓存。",
+                          type: "TECHNICAL",
+                          score: 3,
+                          critique: "回答有分层意识，但需要补充失效策略、数据一致性和异常兜底。",
+                          weak: true,
+                          framework: "先说明缓存目标和约束；再区分资源缓存、接口缓存和状态缓存；接着讲失效策略和一致性；最后补充监控和降级。",
+                          optimizedAnswer: "我会先明确缓存要解决的是加载速度和稳定性问题，再按静态资源、接口数据和本地状态三层处理。",
+                          sourceChunkId: "chunk-1",
+                          isPartial: false,
+                          boundaryNote: "",
+                        }
+                      : {
+                          question: "你怎么设计用户行为埋点？",
+                          originalAnswer: "我会先定义核心事件，再保证上报可靠性和数据校验。",
+                          type: "PRODUCT",
+                          score: 3,
+                          critique: "回答有产品意识，但需要补充事件口径、数据质量和上线验证方式。",
+                          weak: true,
+                          framework: "先说明业务目标；再定义事件、属性和触发时机；接着讲上报可靠性和校验；最后说明如何用数据闭环优化。",
+                          optimizedAnswer: "我会先从业务目标出发定义核心事件，再补充事件属性、触发时机、去重和数据校验方案。",
+                          sourceChunkId: "chunk-2",
+                          isPartial: false,
+                          boundaryNote: "",
+                        },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    const isCacheQuestion = body.includes("原问题:\\n你怎么设计前端缓存策略");
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                question: isCacheQuestion ? "你怎么设计前端缓存策略？" : "你怎么设计用户行为埋点？",
+                originalAnswer: isCacheQuestion ? "我会区分接口缓存、静态资源缓存和本地状态缓存。" : "我会先定义核心事件，再保证上报可靠性和数据校验。",
+                type: isCacheQuestion ? "TECHNICAL" : "PRODUCT",
+                score: 3,
+                critique: isCacheQuestion
+                  ? "回答有分层意识，但需要补充失效策略、数据一致性和异常兜底。"
+                  : "回答有产品意识，但需要补充事件口径、数据质量和上线验证方式。",
+                weak: true,
+                framework: isCacheQuestion
+                  ? "先说明缓存目标和约束；再区分资源缓存、接口缓存和状态缓存；接着讲失效策略和一致性；最后补充监控和降级。"
+                  : "先说明业务目标；再定义事件、属性和触发时机；接着讲上报可靠性和校验；最后说明如何用数据闭环优化。",
+                optimizedAnswer: isCacheQuestion
+                  ? "我会先明确缓存要解决的是加载速度和稳定性问题，再按静态资源、接口数据和本地状态三层处理。"
+                  : "我会先从业务目标出发定义核心事件，再补充事件属性、触发时机、去重和数据校验方案。",
+              }),
+            },
+          },
+        ],
+      }),
+    );
+  },
+  async (mockAiBaseUrl) => {
+    const longTranscript = [
+      `第一段背景说明。${"这里是普通聊天内容。".repeat(420)} 面试官：你怎么设计前端缓存策略？ 我：我会区分接口缓存、静态资源缓存和本地状态缓存。`,
+      `第二段继续讨论。${"这里是中间过渡内容。".repeat(420)} 面试官：你怎么设计用户行为埋点？ 我：我会先定义核心事件，再保证上报可靠性和数据校验。`,
+    ].join("\n\n");
+    const parsedChunkedInterview = await fetch(`${API_URL}/api/parse/interview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawText: longTranscript,
+        fileName: "chunked-ai-interview.md",
+        sourceKind: "transcript",
+        aiSettings: {
+          provider: "custom",
+          endpoint: `${mockAiBaseUrl}/v1`,
+          apiKey: "mock-ai-key",
+          model: "mock-review-model",
+        },
+      }),
+    });
+    if (!parsedChunkedInterview.ok) throw new Error(`POST /api/parse/interview chunked AI review returned ${parsedChunkedInterview.status}`);
+    const payload = await parsedChunkedInterview.json();
+    const questions = (payload.qaPairs ?? []).map((pair) => pair.question).join("\n");
+    if (!questions.includes("缓存策略") || !questions.includes("用户行为埋点") || !payload.note?.includes("分成 2 段")) {
+      throw new Error("POST /api/parse/interview did not chunk, merge, and review long transcript");
+    }
+    console.log("PASS POST /api/parse/interview chunked AI review");
+  },
+);
+
+await withMockAiServer(
+  async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString("utf8");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (body.includes("上一轮分块复盘输出不是 JSON")) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  company: "小红书",
+                  role: "产品经理实习生",
+                  round: "一面",
+                  date: "Today",
+                  qaPairs: [
+                    {
+                      question: "讲一次你主动发现并解决问题的经历",
+                      originalAnswer: "我提到了自己做过 JobPilot，但展开不足。",
+                      type: "BEHAVIORAL",
+                      score: 3,
+                      critique: "回答有项目方向，但缺少背景、关键动作、结果指标和复盘。",
+                      weak: true,
+                      framework:
+                        "先说明问题出现的真实业务场景和影响面；再讲自己如何记录、分类、下钻分析并找到共性原因；接着说明如何推动相关方落地，包括沟通、取舍和优先级；最后用结果指标和个人复盘收束。",
+                      optimizedAnswer:
+                        "我可以讲 JobPilot 这个项目。最开始我发现自己的求职材料、岗位状态、面试复盘和答案练习分散在不同地方，很难形成稳定的行动闭环。所以我把目标定为做一个本地优先的求职管理工具，先打通岗位录入、面试复盘、答案库和今日待办。\n\n在推进过程中，我不是一开始追求完整功能，而是先保证真实数据可以落地，包括 SQLite 持久化、文件上传、JD/文字稿解析和任务联动。之后再逐步接入 OCR 和 AI 面试复盘，让系统能从真实材料里生成可确认的记录。\n\n这个经历让我最大的收获是，产品不只是把功能做出来，而是要围绕用户的真实流程，把信息输入、结构化、复盘和下一步行动连起来。",
+                      sourceChunkId: "chunk-1",
+                      isPartial: false,
+                      boundaryNote: "",
+                    },
+                  ],
                 }),
               },
             },
@@ -398,21 +579,32 @@ await withMockAiServer(
       );
       return;
     }
-    if (body.includes("原问题")) {
+    if (body.includes("面试稿片段")) {
       res.end(
         JSON.stringify({
           choices: [
             {
               message: {
                 content: JSON.stringify({
-                  question: "你负责过什么项目？",
-                  originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
-                  type: "PROJECT",
-                  score: 3,
-                  critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
-                  weak: true,
-                  framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
-                  optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                  company: "小红书",
+                  role: "产品经理实习生",
+                  round: "二面",
+                  date: "Today",
+                  qaPairs: [
+                    {
+                      question: "你负责过什么项目？",
+                      originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
+                      type: "PROJECT",
+                      score: 3,
+                      critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
+                      weak: true,
+                      framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
+                      optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                      sourceChunkId: "chunk-1",
+                      isPartial: false,
+                      boundaryNote: "",
+                    },
+                  ],
                 }),
               },
             },
@@ -476,21 +668,32 @@ await withMockAiServer(
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString("utf8");
     res.writeHead(200, { "Content-Type": "application/json" });
-    if (body.includes("原问题")) {
+    if (body.includes("面试稿片段")) {
       res.end(
         JSON.stringify({
           choices: [
             {
               message: {
                 content: JSON.stringify({
-                  question: "你负责过什么项目？",
-                  originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
-                  type: "PROJECT",
-                  score: 3,
-                  critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
-                  weak: true,
-                  framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
-                  optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                  company: "小红书",
+                  role: "产品经理实习生",
+                  round: "二面",
+                  date: "Today",
+                  qaPairs: [
+                    {
+                      question: "你负责过什么项目？",
+                      originalAnswer: "我负责 JobPilot MVP，打通岗位、面试和答案库。",
+                      type: "PROJECT",
+                      score: 3,
+                      critique: "回答说明了项目方向，但还需要补充个人职责、关键动作和结果指标。",
+                      weak: true,
+                      framework: "先说明 JobPilot 解决的求职管理痛点；再讲自己负责岗位、面试和答案库闭环；接着展开关键动作和取舍；最后用结果、限制和下一步优化收束。",
+                      optimizedAnswer: "我负责 JobPilot MVP 的核心闭环，从岗位录入、面试复盘到答案库沉淀，重点解决求职材料分散和行动不可追踪的问题。",
+                      sourceChunkId: "chunk-1",
+                      isPartial: false,
+                      boundaryNote: "",
+                    },
+                  ],
                 }),
               },
             },
@@ -693,8 +896,8 @@ const weeklyPlanAfterProgress = await fetch(`${API_URL}/api/weekly-plan/current`
 const followupTasksAfterProgress = weeklyPlanAfterProgress.tasks.filter(
   (task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id,
 );
-if (followupTasksAfterProgress.length !== 1) {
-  throw new Error("POST /api/opportunities/:id/progress did not create one opportunity follow-up task");
+if (followupTasksAfterProgress.length !== 0) {
+  throw new Error("POST /api/opportunities/:id/progress should not create opportunity follow-up weekly tasks");
 }
 
 const repeatedProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
@@ -714,10 +917,62 @@ const weeklyPlanAfterRepeatedProgress = await fetch(`${API_URL}/api/weekly-plan/
 const followupTasksAfterRepeatedProgress = weeklyPlanAfterRepeatedProgress.tasks.filter(
   (task) => task.source === "opportunity" && task.relatedEntityId === tempOpportunity.id,
 );
-if (followupTasksAfterRepeatedProgress.length !== 1) {
-  throw new Error("POST /api/opportunities/:id/progress created duplicate opportunity follow-up tasks");
+if (followupTasksAfterRepeatedProgress.length !== 0) {
+  throw new Error("POST /api/opportunities/:id/progress created opportunity follow-up weekly tasks");
 }
-console.log("PASS POST /api/opportunities/:id/progress follow-up task");
+console.log("PASS POST /api/opportunities/:id/progress without follow-up task");
+
+const interviewingProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "INTERVIEWING",
+    timelineEvent: {
+      title: "API check interviewing",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!interviewingProgress.ok) throw new Error(`interviewing POST /api/opportunities/:id/progress returned ${interviewingProgress.status}`);
+const linkedInterview = {
+  id: `INT-CHECK-LINKED-${Date.now()}`,
+  opportunityId: tempOpportunity.id,
+  company: tempOpportunity.company,
+  role: tempOpportunity.title,
+  round: "linked interview",
+  date: "Today",
+  sourceFiles: [],
+  qaPairs: [
+    {
+      id: `QA-CHECK-LINKED-${Date.now()}`,
+      question: "linked interview question",
+      answer: "temporary",
+      framework: "STAR",
+      critique: "temporary",
+      optimizedAnswer: "temporary",
+      type: "behavioral",
+      weak: false,
+    },
+  ],
+};
+const createdLinkedInterview = await fetch(`${API_URL}/api/interviews`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(linkedInterview),
+});
+if (!createdLinkedInterview.ok) throw new Error(`POST linked /api/interviews returned ${createdLinkedInterview.status}`);
+const opportunityAfterLinkedInterview = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`).then((response) => response.json());
+if (opportunityAfterLinkedInterview.status !== "WAITING") {
+  throw new Error("POST linked /api/interviews did not advance opportunity to WAITING");
+}
+const todayActionsAfterLinkedInterview = await fetch(`${API_URL}/api/dashboard/today-actions`).then((response) => response.json());
+if (todayActionsAfterLinkedInterview.some((action) => action.source === "opportunity" && action.targetId === tempOpportunity.id)) {
+  throw new Error("POST linked /api/interviews should not create waiting follow-up today action");
+}
+const deletedLinkedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(linkedInterview.id)}`, { method: "DELETE" });
+if (!deletedLinkedInterview.ok) throw new Error(`DELETE linked /api/interviews/:id returned ${deletedLinkedInterview.status}`);
+console.log("PASS POST linked /api/interviews advances opportunity");
 
 const deletedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, { method: "DELETE" });
 if (!deletedOpportunity.ok) throw new Error(`DELETE /api/opportunities/:id returned ${deletedOpportunity.status}`);
