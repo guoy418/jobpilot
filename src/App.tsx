@@ -188,6 +188,18 @@ type ConfirmDialogState = {
   onConfirm: () => void;
 };
 
+type WeeklyTaskFormDraft = {
+  title: string;
+  detail: string;
+  level: WeeklyTask["level"];
+};
+
+const emptyWeeklyTaskForm = (): WeeklyTaskFormDraft => ({
+  title: "",
+  detail: "",
+  level: "P2",
+});
+
 type AiSettings = {
   provider: "none" | "openai" | "anthropic" | "custom";
   model: string;
@@ -450,6 +462,49 @@ const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: Today
   return normalizedActions.length ? normalizedActions : fallback;
 };
 
+const GRID_PAGE_SIZE = 6;
+const WEEKLY_PRACTICE_FIRST_PAGE_TASKS = 5;
+const TABLE_PAGE_SIZE = 6;
+const TODAY_PAGE_SIZE = 8;
+
+const listPageCount = (length: number, pageSize: number) => Math.max(1, Math.ceil(length / pageSize));
+
+const clampListPage = (page: number, pageCount: number) => Math.min(Math.max(page, 0), Math.max(pageCount - 1, 0));
+
+const paginateList = <T,>(items: T[], page: number, pageSize: number) => {
+  const pageCount = listPageCount(items.length, pageSize);
+  const safePage = clampListPage(page, pageCount);
+  return {
+    pageCount,
+    safePage,
+    visible: items.slice(safePage * pageSize, safePage * pageSize + pageSize),
+  };
+};
+
+const paginateWeeklyGroupTasks = (tasks: WeeklyTask[], page: number, groupId: string) => {
+  if (groupId === "practice") {
+    const needsSecondPage = tasks.length > WEEKLY_PRACTICE_FIRST_PAGE_TASKS;
+    const pageCount = needsSecondPage
+      ? 1 + Math.ceil((tasks.length - WEEKLY_PRACTICE_FIRST_PAGE_TASKS) / GRID_PAGE_SIZE)
+      : 1;
+    const safePage = clampListPage(page, pageCount);
+    if (safePage === 0) {
+      return {
+        pageCount,
+        safePage,
+        visible: tasks.slice(0, WEEKLY_PRACTICE_FIRST_PAGE_TASKS),
+      };
+    }
+    const start = WEEKLY_PRACTICE_FIRST_PAGE_TASKS + (safePage - 1) * GRID_PAGE_SIZE;
+    return {
+      pageCount,
+      safePage,
+      visible: tasks.slice(start, start + GRID_PAGE_SIZE),
+    };
+  }
+  return paginateList(tasks, page, GRID_PAGE_SIZE);
+};
+
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
@@ -461,9 +516,13 @@ function App() {
   const [selectedQaId, setSelectedQaId] = useState(seedInterviewSessions[0].qaPairs[0].id);
   const [query, setQuery] = useState("");
   const [interviewPage, setInterviewPage] = useState(0);
+  const [answerPage, setAnswerPage] = useState(0);
+  const [opportunityPage, setOpportunityPage] = useState(0);
+  const [weeklyInterviewPage, setWeeklyInterviewPage] = useState(0);
+  const [weeklyPracticePage, setWeeklyPracticePage] = useState(0);
+  const [todayPage, setTodayPage] = useState(0);
   const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
-  const [weeklyEditingTaskId, setWeeklyEditingTaskId] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [apiMode, setApiMode] = useState<ApiModeState>(() =>
@@ -479,6 +538,7 @@ function App() {
   const [previewAsset, setPreviewAsset] = useState<SourceAsset | null>(null);
   const [previewSessionFile, setPreviewSessionFile] = useState<SessionFile | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [weeklyTaskForm, setWeeklyTaskForm] = useState<WeeklyTaskFormDraft | null>(null);
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
   const [dismissedTodayIds, setDismissedTodayIds] = useState<Set<string>>(() => loadDismissedTodayIds());
   const [composer, setComposer] = useState<ModuleComposer | null>(null);
@@ -627,9 +687,10 @@ function App() {
   const filteredInterviewSessions = interviewSessions.filter((session) =>
     `${session.company} ${session.role} ${session.round} ${session.date}`.toLowerCase().includes(normalizedQuery),
   );
-  const interviewPageSize = 4;
-  const interviewPageCount = Math.max(1, Math.ceil(filteredInterviewSessions.length / interviewPageSize));
-  const visibleInterviewSessions = filteredInterviewSessions.slice(interviewPage * interviewPageSize, interviewPage * interviewPageSize + interviewPageSize);
+  const interviewList = paginateList(filteredInterviewSessions, interviewPage, GRID_PAGE_SIZE);
+  const visibleInterviewSessions = interviewList.visible;
+  const interviewPageCount = interviewList.pageCount;
+  const safeInterviewPage = interviewList.safePage;
   const filteredAnswerCards = useMemo(
     () =>
       answerCards.filter((card) => {
@@ -638,6 +699,10 @@ function App() {
       }),
     [answerCards, normalizedQuery],
   );
+  const answerList = paginateList(filteredAnswerCards, answerPage, GRID_PAGE_SIZE);
+  const visibleAnswerCards = answerList.visible;
+  const answerPageCount = answerList.pageCount;
+  const safeAnswerPage = answerList.safePage;
   const weeklyTaskGroups = useMemo(
     () =>
       [
@@ -674,6 +739,14 @@ function App() {
       return matchesQuery && matchesFilter;
     });
   }, [opportunities, normalizedQuery, filter, resumeList]);
+  const opportunityList = paginateList(filteredOpportunities, opportunityPage, TABLE_PAGE_SIZE);
+  const visibleOpportunities = opportunityList.visible;
+  const opportunityPageCount = opportunityList.pageCount;
+  const safeOpportunityPage = opportunityList.safePage;
+  const todayList = paginateList(todayActions, todayPage, TODAY_PAGE_SIZE);
+  const visibleTodayActions = todayList.visible;
+  const todayPageCount = todayList.pageCount;
+  const safeTodayPage = todayList.safePage;
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -1164,7 +1237,7 @@ function App() {
   };
 
   const replaceInterviewQaPairs = (sessionId: string, previousPairs: QaPair[], nextPairs: Array<Omit<QaPair, "id">>) => {
-    const qaPairs: QaPair[] = nextPairs.map((pair) => ({ id: makeId("QA"), ...pair }));
+    const qaPairs: QaPair[] = nextPairs.map((pair) => ({ ...pair, id: makeId("QA") }));
     setInterviewSessions((sessions) => sessions.map((session) => (session.id === sessionId ? { ...session, qaPairs } : session)));
     setSelectedQaId(qaPairs[0]?.id ?? "");
     previousPairs.forEach((pair) => syncDeletedQaPair(pair.id));
@@ -1281,16 +1354,17 @@ function App() {
   const requestConfirm = (config: ConfirmDialogState) => setConfirmDialog(config);
 
   useEffect(() => {
-    if (!confirmDialog && !previewAsset && !previewSessionFile) return;
+    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
+      else if (weeklyTaskForm) setWeeklyTaskForm(null);
       else if (previewAsset) setPreviewAsset(null);
       else if (previewSessionFile) setPreviewSessionFile(null);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [confirmDialog, previewAsset, previewSessionFile]);
+  }, [confirmDialog, previewAsset, previewSessionFile, weeklyTaskForm]);
 
   const syncCreatedAnswerCard = (card: AnswerCard) => {
     void createAnswerCardApi(card)
@@ -1715,21 +1789,38 @@ function App() {
     setSystemMessage("面试复盘已导出");
   };
 
-  const addWeeklyTask = (preset?: Partial<Pick<WeeklyTask, "title" | "detail">>) => {
+  const addWeeklyTask = (preset?: Partial<Pick<WeeklyTask, "title" | "detail" | "level">>) => {
     const newTask: WeeklyTask = {
       id: makeId("WT"),
-      title: preset?.title ?? "新的练习动作",
-      detail: preset?.detail ?? "写下今天准备推进的一件小事。",
+      title: preset?.title?.trim() || "新的练习动作",
+      detail: preset?.detail?.trim() || "写下今天准备推进的一件小事。",
       source: "manual",
       sourceLabel: "训练计划",
-      level: "P2",
+      level: preset?.level ?? "P2",
       status: "open",
     };
     setWeeklyPlan((plan) => ({ ...plan, tasks: [newTask, ...plan.tasks] }));
-    setWeeklyEditingTaskId(newTask.id);
+    setWeeklyPracticePage(0);
     invalidateApiInsights();
     syncCreatedWeeklyTask(newTask);
     setSystemMessage("动作已添加");
+  };
+
+  const openWeeklyTaskDialog = () => setWeeklyTaskForm(emptyWeeklyTaskForm());
+
+  const submitWeeklyTaskForm = () => {
+    if (!weeklyTaskForm) return;
+    const title = weeklyTaskForm.title.trim();
+    if (!title) {
+      setSystemMessage("请填写动作标题");
+      return;
+    }
+    addWeeklyTask({
+      title,
+      detail: weeklyTaskForm.detail.trim() || "例如：练一道笔试题，或整理一个项目表达。",
+      level: weeklyTaskForm.level,
+    });
+    setWeeklyTaskForm(null);
   };
 
   const updateWeeklyTask = (id: string, field: keyof Pick<WeeklyTask, "title" | "detail" | "status" | "level">, value: string) => {
@@ -1751,7 +1842,6 @@ function App() {
 
   const deleteWeeklyTask = (id: string) => {
     setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => task.id !== id) }));
-    setWeeklyEditingTaskId((currentId) => (currentId === id ? null : currentId));
     invalidateApiInsights();
     syncDeletedWeeklyTask(id);
     setSystemMessage("动作已删除");
@@ -1917,8 +2007,8 @@ function App() {
     const parsedQaPairs = composerParsedQaPairs.length ? composerParsedQaPairs : hasUsableTranscript ? parseTranscriptQaPairs(sourceText) : [];
     const qaPairs: QaPair[] = parsedQaPairs.length
       ? parsedQaPairs.map((pair) => ({
-          id: makeId("QA"),
           ...pair,
+          id: makeId("QA"),
         }))
       : [
       {
@@ -2291,6 +2381,10 @@ function App() {
                 onChange={(event) => {
                   setQuery(event.target.value);
                   setInterviewPage(0);
+                  setAnswerPage(0);
+                  setOpportunityPage(0);
+                  setWeeklyInterviewPage(0);
+                  setWeeklyPracticePage(0);
                 }}
                 placeholder={topSearchPlaceholder(page)}
               />
@@ -2323,45 +2417,50 @@ function App() {
             </section>
 
             <section className="home-main">
-              <div className="today-panel surface">
-                <div className="eyebrow">今日待办</div>
-                <div className="today-heading">
-                  <div>
-                    <h1>今天先处理这几件事</h1>
-                    <p>这里会集中显示你今天最应该推进的投递、复盘和练习。</p>
-                  </div>
-                  <div className="hero-number small">{todayActions.length}</div>
-                </div>
-                <div className="hero-actions">
-                  <button className="primary-button" onClick={() => openComposer("opportunity")}>
-                    <BriefcaseBusiness size={16} />
-                    <span>新增岗位</span>
-                  </button>
-                  <button className="secondary-button" onClick={() => goTo("opportunities")}>
-                    <BriefcaseBusiness size={16} />
-                    <span>查看岗位</span>
-                  </button>
-                </div>
-                <div className="action-list attached">
-                  {todayActions.map((action) => (
-                    <div className="action-row" key={todayActionKey(action)}>
-                      <button className="action-row-main" onClick={() => openTodayAction(action)}>
-                        <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
-                        <span className="action-copy">
-                          <strong>
-                            <em className="source-chip">{todayActionSourceLabel(action)}</em>
-                            {action.title}
-                          </strong>
-                          <small>{action.detail}</small>
-                        </span>
-                        <ChevronRight size={16} />
-                      </button>
-                      <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
-                        完成
-                      </button>
+              <div className="today-panel surface paginated-pane">
+                <div className="paginated-pane-header">
+                  <div className="eyebrow">今日待办</div>
+                  <div className="today-heading">
+                    <div>
+                      <h1>今天先处理这几件事</h1>
+                      <p>这里会集中显示你今天最应该推进的投递、复盘和练习。</p>
                     </div>
-                  ))}
+                    <div className="hero-number small">{todayActions.length}</div>
+                  </div>
+                  <div className="hero-actions">
+                    <button className="primary-button" onClick={() => openComposer("opportunity")}>
+                      <BriefcaseBusiness size={16} />
+                      <span>新增岗位</span>
+                    </button>
+                    <button className="secondary-button" onClick={() => goTo("opportunities")}>
+                      <BriefcaseBusiness size={16} />
+                      <span>查看岗位</span>
+                    </button>
+                  </div>
                 </div>
+                <div className="paginated-pane-body">
+                  <div className="action-list attached paginated-pane-content today-action-list">
+                    {visibleTodayActions.map((action) => (
+                      <div className="action-row" key={todayActionKey(action)}>
+                        <button className="action-row-main" onClick={() => openTodayAction(action)}>
+                          <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                          <span className="action-copy">
+                            <strong>
+                              <em className="source-chip">{todayActionSourceLabel(action)}</em>
+                              {action.title}
+                            </strong>
+                            <small>{action.detail}</small>
+                          </span>
+                          <ChevronRight size={16} />
+                        </button>
+                        <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                          完成
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <ListPager alwaysShow className="paginated-pane-footer" page={safeTodayPage} pageCount={todayPageCount} onPageChange={setTodayPage} />
               </div>
 
               <aside className="home-side">
@@ -2430,65 +2529,72 @@ function App() {
         )}
 
         {page === "opportunities" && (
-          <section className="surface table-page">
-            <PageIntro
-              label="岗位管理"
-              title="你正在跟进的岗位"
-              detail="按优先级、匹配度和截止时间管理投递备注。"
-              action={`${filteredOpportunities.length} 个岗位`}
-            />
-            <div className="toolbar-row">
-              <div className="filter-bar">
-                {["ALL", "P0", "P1", "A PRIORITY", "HIGH MATCH", "DUE SOON"].map((item) => (
-                  <button key={item} className={filter === item ? "active-filter" : ""} onClick={() => setFilter(item)}>
-                    {opportunityFilterLabel(item)}
+          <section className="surface table-page paginated-pane">
+            <div className="paginated-pane-header">
+              <PageIntro
+                label="岗位管理"
+                title="你正在跟进的岗位"
+                detail="按优先级、匹配度和截止时间管理投递备注。"
+                action={`${filteredOpportunities.length} 个岗位`}
+              />
+              <div className="toolbar-row">
+                <div className="filter-bar">
+                  {["ALL", "P0", "P1", "A PRIORITY", "HIGH MATCH", "DUE SOON"].map((item) => (
+                    <button key={item} className={filter === item ? "active-filter" : ""} onClick={() => { setFilter(item); setOpportunityPage(0); }}>
+                      {opportunityFilterLabel(item)}
+                    </button>
+                  ))}
+                </div>
+                <div className="view-toggle">
+                  <button className="primary-chip" onClick={() => openComposer("opportunity")}>
+                    <Plus size={14} />
+                    新增岗位
                   </button>
-                ))}
-              </div>
-              <div className="view-toggle">
-                <button className="primary-chip" onClick={() => openComposer("opportunity")}>
-                  <Plus size={14} />
-                  新增岗位
-                </button>
-                <button className={viewMode === "table" ? "active-filter" : ""} onClick={() => setViewMode("table")}>
-                  <FileText size={14} />
-                  表格
-                </button>
-                <button className={viewMode === "board" ? "active-filter" : ""} onClick={() => setViewMode("board")}>
-                  <KanbanSquare size={14} />
-                  看板
-                </button>
+                  <button className={viewMode === "table" ? "active-filter" : ""} onClick={() => setViewMode("table")}>
+                    <FileText size={14} />
+                    表格
+                  </button>
+                  <button className={viewMode === "board" ? "active-filter" : ""} onClick={() => setViewMode("board")}>
+                    <KanbanSquare size={14} />
+                    看板
+                  </button>
+                </div>
               </div>
             </div>
 
-            {viewMode === "table" ? (
-              <div className="opportunity-table">
-                <div className="table-head">
-                  <span>岗位</span>
-                  <span>状态</span>
-                  <span>优先级</span>
-                  <span>截止</span>
-                  <span>备注</span>
+            <div className="paginated-pane-body">
+              {viewMode === "table" ? (
+                <div className="opportunity-table paginated-pane-content paginated-table-content">
+                  <div className="table-head">
+                    <span>岗位</span>
+                    <span>状态</span>
+                    <span>优先级</span>
+                    <span>截止</span>
+                    <span>备注</span>
+                  </div>
+                  {visibleOpportunities.map((item) => (
+                    <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
+                      <span>
+                        <strong>{item.title}</strong>
+                        <small>{item.company} / {item.city} / {getResumeName(item.resumeId)}</small>
+                      </span>
+                      <StatusPill status={item.status} />
+                      <span className="signal-stack">
+                        <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
+                        <small>{item.priority} / {item.match}</small>
+                      </span>
+                      <span className="mono">{item.deadline}</span>
+                      <span>{item.nextAction}</span>
+                    </button>
+                  ))}
                 </div>
-                {filteredOpportunities.map((item) => (
-                  <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
-                    <span>
-                      <strong>{item.title}</strong>
-                      <small>{item.company} / {item.city} / {getResumeName(item.resumeId)}</small>
-                    </span>
-                    <StatusPill status={item.status} />
-                    <span className="signal-stack">
-                      <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
-                      <small>{item.priority} / {item.match}</small>
-                    </span>
-                    <span className="mono">{item.deadline}</span>
-                    <span>{item.nextAction}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <BoardView opportunities={filteredOpportunities} openOpportunity={openOpportunity} />
-            )}
+              ) : (
+                <div className="paginated-pane-content">
+                  <BoardView opportunities={visibleOpportunities} openOpportunity={openOpportunity} />
+                </div>
+              )}
+            </div>
+            <ListPager alwaysShow className="paginated-pane-footer" page={safeOpportunityPage} pageCount={opportunityPageCount} onPageChange={setOpportunityPage} />
           </section>
         )}
 
@@ -2662,65 +2768,58 @@ function App() {
         {page === "interviews" && (
           <section className="interview-page">
             {interviewView === "list" ? (
-              <div className="surface interview-list-pane interview-home-pane">
-                <PageIntro
-                  label="面试复盘"
-                  title="记录每一场面试"
-                  detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
-                  action={`${interviewSessions.length} 场面试`}
-                />
+              <div className="surface interview-list-pane interview-home-pane paginated-pane">
+                <div className="paginated-pane-header">
+                  <PageIntro
+                    label="面试复盘"
+                    title="记录每一场面试"
+                    detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
+                    action={`${interviewSessions.length} 场面试`}
+                  />
 
-                <div className="button-row tight-row">
-                  <button className="primary-button" onClick={() => openComposer("interview")}>
-                    <Upload size={16} />
-                    <span>导入面试复盘</span>
-                  </button>
+                  <div className="button-row tight-row">
+                    <button className="primary-button" onClick={() => openComposer("interview")}>
+                      <Upload size={16} />
+                      <span>导入面试复盘</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="interview-card-grid">
-                  {visibleInterviewSessions.map((session) => {
-                    const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
-                    return (
-                      <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
-                        <div className="interview-card-topline">
-                          <span>{session.date}</span>
-                          <strong>{weakCount ? `${weakCount} 题待练` : "已整理"}</strong>
-                        </div>
-                        <h3>{session.company}</h3>
-                        <p>{session.role} · {session.round}</p>
-                        <div className="interview-card-stats">
-                          <span>{session.qaPairs.length} 个问题</span>
-                          <span>{session.sourceFiles?.length ?? 0} 份材料</span>
-                          <ChevronRight size={16} />
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="paginated-pane-body">
+                  <div className="interview-card-grid paginated-pane-content">
+                    {visibleInterviewSessions.map((session) => {
+                      const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
+                      return (
+                        <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
+                          <div className="interview-card-topline">
+                            <span>{session.date}</span>
+                            <strong>{weakCount ? `${weakCount} 题待练` : "已整理"}</strong>
+                          </div>
+                          <h3>{session.company}</h3>
+                          <p>{session.role} · {session.round}</p>
+                          <div className="interview-card-stats">
+                            <span>{session.qaPairs.length} 个问题</span>
+                            <span>{session.sourceFiles?.length ?? 0} 份材料</span>
+                            <ChevronRight size={16} />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                <div className="pager-row">
-                  <button className="ghost-button compact-button" disabled={interviewPage === 0} onClick={() => setInterviewPage((pageIndex) => Math.max(0, pageIndex - 1))}>
-                    上一页
-                  </button>
-                  <span>{interviewPage + 1} / {interviewPageCount}</span>
-                  <button className="ghost-button compact-button" disabled={interviewPage >= interviewPageCount - 1} onClick={() => setInterviewPage((pageIndex) => Math.min(interviewPageCount - 1, pageIndex + 1))}>
-                    下一页
-                  </button>
-                </div>
+                <ListPager alwaysShow className="paginated-pane-footer" page={safeInterviewPage} pageCount={interviewPageCount} onPageChange={setInterviewPage} />
               </div>
             ) : (
               <div className="surface review-editor interview-detail-pane">
-                <div className="interview-detail-nav">
-                  <button className="ghost-button compact-button" onClick={() => setInterviewView("list")}>
+                <div className="interview-detail-nav interview-detail-nav-start">
+                  <button
+                    className="ghost-button compact-button"
+                    onClick={() => (interviewView === "question" ? setInterviewView("session") : setInterviewView("list"))}
+                  >
                     <ChevronLeft size={14} />
-                    <span>全部面试</span>
+                    <span>{interviewView === "question" ? "问题目录" : "全部面试"}</span>
                   </button>
-                  {interviewView === "question" ? (
-                    <button className="ghost-button compact-button" onClick={() => setInterviewView("session")}>
-                      <ChevronLeft size={14} />
-                      <span>问题目录</span>
-                    </button>
-                  ) : null}
                 </div>
 
                 {interviewView === "session" ? (
@@ -2864,7 +2963,7 @@ function App() {
                       onChange={(value) => updateSelectedQa("framework", value)}
                     />
                     <ReviewBlock
-                      label="具体回答表述"
+                      label="具体优化回答"
                       value={selectedQa.optimizedAnswer}
                       onChange={(value) => updateSelectedQa("optimizedAnswer", value)}
                     />
@@ -2913,47 +3012,52 @@ function App() {
         {page === "answers" && (
           <section className="answer-workspace">
             {answerView === "list" ? (
-              <div className="surface answer-list-pane answer-home-pane">
-                <PageIntro
-                  label="答案库"
-                  title="沉淀可复用回答"
-                  detail="把常见问题、回答框架和推荐表达整理成之后可以直接练习的答案卡。"
-                  action={`${answerCards.length} 张卡片`}
-                />
-                <div className="button-row tight-row">
-                  <button className="primary-button" onClick={() => openComposer("answer")}>
-                    <Plus size={16} />
-                    <span>新增答案卡</span>
-                  </button>
-                  <button className="secondary-button" onClick={() => goTo("interviews")}>
-                    <FileAudio size={16} />
-                    <span>从复盘生成</span>
-                  </button>
+              <div className="surface answer-list-pane answer-home-pane paginated-pane">
+                <div className="paginated-pane-header">
+                  <PageIntro
+                    label="答案库"
+                    title="沉淀可复用回答"
+                    detail="把常见问题、回答框架和推荐表达整理成之后可以直接练习的答案卡。"
+                    action={`${answerCards.length} 张卡片`}
+                  />
+                  <div className="button-row tight-row">
+                    <button className="primary-button" onClick={() => openComposer("answer")}>
+                      <Plus size={16} />
+                      <span>新增答案卡</span>
+                    </button>
+                    <button className="secondary-button" onClick={() => goTo("interviews")}>
+                      <FileAudio size={16} />
+                      <span>从复盘生成</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="answer-list">
-                  {filteredAnswerCards.length === 0 ? (
-                    <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
-                  ) : (
-                    filteredAnswerCards.map((card) => (
-                      <button
-                        className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
-                        key={card.id}
-                        onClick={() => openAnswerCard(card.id)}
-                      >
-                        <div>
-                          <span className="type-pill">{card.type}</span>
-                          <h3>{card.question}</h3>
-                        </div>
-                        <small>{card.source} / {card.practiceStatus}</small>
-                        <ChevronRight size={16} />
-                      </button>
-                    ))
-                  )}
+                <div className="paginated-pane-body">
+                  <div className="answer-list paginated-pane-content">
+                    {filteredAnswerCards.length === 0 ? (
+                      <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
+                    ) : (
+                      visibleAnswerCards.map((card) => (
+                        <button
+                          className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""}`}
+                          key={card.id}
+                          onClick={() => openAnswerCard(card.id)}
+                        >
+                          <div>
+                            <span className="type-pill">{card.type}</span>
+                            <h3>{card.question}</h3>
+                          </div>
+                          <small>{card.source} / {card.practiceStatus}</small>
+                          <ChevronRight size={16} />
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </div>
+                <ListPager alwaysShow className="paginated-pane-footer" page={safeAnswerPage} pageCount={answerPageCount} onPageChange={setAnswerPage} />
               </div>
             ) : (
               <div className="surface answer-editor answer-detail-pane">
-                <div className="interview-detail-nav">
+                <div className="interview-detail-nav interview-detail-nav-start">
                   <button className="ghost-button compact-button" onClick={() => setAnswerView("list")}>
                     <ChevronLeft size={14} />
                     <span>全部答案</span>
@@ -3099,108 +3203,108 @@ function App() {
 
         {page === "weekly" && (
           <section className="weekly-workspace">
-            <div className="surface weekly-board">
-              <PageIntro
-                label="训练计划"
-                title="安排本周要练的事"
-                detail="训练计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
-                action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} 待完成`}
-              />
-              <div className="weekly-overview">
-                <div className="weekly-progress-card">
-                  <span>本周投递</span>
-                  <strong>{submittedApplications}/{weeklyPlan.targetApplications}</strong>
-                  <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
+            <div className="surface weekly-board paginated-pane">
+              <div className="paginated-pane-header">
+                <PageIntro
+                  label="训练计划"
+                  title="安排本周要练的事"
+                  detail="训练计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
+                  action={`${weeklyPlan.tasks.filter((task) => task.status === "open").length} 待完成`}
+                />
+                <div className="weekly-overview">
+                  <div className="weekly-progress-card">
+                    <span>本周投递</span>
+                    <strong>{submittedApplications}/{weeklyPlan.targetApplications}</strong>
+                    <SegmentedProgress value={(submittedApplications / weeklyPlan.targetApplications) * 100} segments={12} />
+                  </div>
+                  <label className="weekly-goal-card">
+                    <span>目标</span>
+                    <input
+                      type="number"
+                      value={weeklyPlan.targetApplications}
+                      onChange={(event) => updateWeeklyTargetApplications(Number(event.target.value))}
+                    />
+                    <small>本周想投递多少个岗位</small>
+                  </label>
                 </div>
-                <label className="weekly-goal-card">
-                  <span>目标</span>
-                  <input
-                    type="number"
-                    value={weeklyPlan.targetApplications}
-                    onChange={(event) => updateWeeklyTargetApplications(Number(event.target.value))}
-                  />
-                  <small>本周想投递多少个岗位</small>
-                </label>
               </div>
 
-              <div className="weekly-group-list">
-                {weeklyTaskGroups.map((group) => (
-                  <section className="weekly-task-group" key={group.id}>
-                    <div className="weekly-group-header">
-                      <div>
-                        <h3>{group.title}</h3>
-                        <p>{group.detail}</p>
-                      </div>
-                      <span>{group.tasks.length} 项</span>
-                    </div>
-                    <div className="weekly-examples">
-                      {group.examples.map((example) => (
-                        <small key={example}>{example}</small>
-                      ))}
-                    </div>
-                    <div className="weekly-task-list">
-                      {group.id === "practice" ? (
-                        <button
-                          className="weekly-add-card"
-                          onClick={() => addWeeklyTask({ title: "新的自主训练", detail: "例如：练一道笔试题，或整理一个项目表达。" })}
-                        >
-                          <Plus size={18} />
-                          <strong>添加动作</strong>
-                          <span>新增一张自主训练卡片</span>
-                        </button>
-                      ) : null}
-                      {group.tasks.map((task) => (
-                        <article className={`weekly-task ${task.status === "done" ? "is-done" : ""} ${weeklyEditingTaskId === task.id ? "is-editing" : ""}`} key={task.id}>
-                          <div className="weekly-task-header">
-                            <span>{task.status === "done" ? "已完成" : task.level ?? "P2"}</span>
-                            <small>{task.sourceLabel}</small>
+              <div className="paginated-pane-body">
+                <div className="weekly-group-list weekly-groups-page">
+                  {weeklyTaskGroups.map((group) => {
+                    if (group.id === "interview" && !group.tasks.length) return null;
+
+                    const page = group.id === "interview" ? weeklyInterviewPage : weeklyPracticePage;
+                    const setPage = group.id === "interview" ? setWeeklyInterviewPage : setWeeklyPracticePage;
+                    const taskList = paginateWeeklyGroupTasks(group.tasks, page, group.id);
+                    const visibleTasks = taskList.visible;
+                    const showAddCard = group.id === "practice" && taskList.safePage === 0;
+
+                    return (
+                      <section className="weekly-task-group" key={group.id}>
+                        <div className="weekly-group-header">
+                          <div>
+                            <h3>{group.title}</h3>
+                            <p>{group.detail}</p>
                           </div>
-                          {weeklyEditingTaskId === task.id ? (
-                            <>
-                              <input aria-label="动作标题" value={task.title} onChange={(event) => updateWeeklyTask(task.id, "title", event.target.value)} />
-                              <textarea aria-label="动作备注" value={task.detail} onChange={(event) => updateWeeklyTask(task.id, "detail", event.target.value)} />
-                              <select value={task.level ?? "P2"} onChange={(event) => updateWeeklyTask(task.id, "level", event.target.value)}>
-                                <option value="P0">今天必须做</option>
-                                <option value="P1">优先推进</option>
-                                <option value="P2">正常练习</option>
-                                <option value="P3">低优先</option>
-                              </select>
-                            </>
-                          ) : (
-                            <>
+                          <span>{group.tasks.length} 项</span>
+                        </div>
+                        <div className="weekly-examples">
+                          {group.examples.map((example) => (
+                            <small key={example}>{example}</small>
+                          ))}
+                        </div>
+                        <div className="weekly-task-list">
+                          {showAddCard ? (
+                            <button className="weekly-add-card" onClick={openWeeklyTaskDialog}>
+                              <Plus size={18} />
+                              <strong>添加动作</strong>
+                              <span>新增一张自主训练卡片</span>
+                            </button>
+                          ) : null}
+                          {visibleTasks.map((task) => (
+                            <article className={`weekly-task ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
+                              <div className="weekly-task-header">
+                                <span>{task.status === "done" ? "已完成" : task.level ?? "P2"}</span>
+                                <small>{task.sourceLabel}</small>
+                              </div>
                               <h3>{task.title}</h3>
                               <p>{task.detail}</p>
-                            </>
-                          )}
-                          <div className="weekly-task-actions">
-                            <button className="weekly-card-action" onClick={() => setWeeklyEditingTaskId(weeklyEditingTaskId === task.id ? null : task.id)}>
-                              {weeklyEditingTaskId === task.id ? "收起" : "编辑"}
-                            </button>
-                            <button
-                              className="weekly-card-action is-primary"
-                              onClick={() => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
-                            >
-                              {task.status === "done" ? "重新打开" : "标记已完成"}
-                            </button>
-                            <button
-                              className="weekly-card-action is-danger"
-                              onClick={() =>
-                                requestConfirm({
-                                  title: "删除这条动作？",
-                                  description: `「${task.title}」删除后不再出现在训练计划里。`,
-                                  confirmLabel: "删除",
-                                  onConfirm: () => deleteWeeklyTask(task.id),
-                                })
-                              }
-                            >
-                              删除
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                              <div className="weekly-task-actions">
+                                <button
+                                  className="weekly-card-action is-primary"
+                                  onClick={() => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
+                                >
+                                  {task.status === "done" ? "重新打开" : "标记已完成"}
+                                </button>
+                                <button
+                                  className="weekly-card-action is-danger"
+                                  onClick={() =>
+                                    requestConfirm({
+                                      title: "删除这条动作？",
+                                      description: `「${task.title}」删除后不再出现在训练计划里。`,
+                                      confirmLabel: "删除",
+                                      onConfirm: () => deleteWeeklyTask(task.id),
+                                    })
+                                  }
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                        <ListPager
+                          alwaysShow
+                          className="weekly-section-pager"
+                          page={taskList.safePage}
+                          pageCount={taskList.pageCount}
+                          onPageChange={setPage}
+                        />
+                      </section>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </section>
@@ -3700,6 +3804,62 @@ function App() {
           </div>
         )}
 
+        {weeklyTaskForm && (
+          <div className="asset-preview weekly-task-dialog" role="dialog" aria-modal="true" onClick={() => setWeeklyTaskForm(null)}>
+            <div className="asset-preview-panel weekly-task-form-panel" onClick={(event) => event.stopPropagation()}>
+              <button className="modal-close-button" onClick={() => setWeeklyTaskForm(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
+              <div className="section-title">
+                <span>自主训练</span>
+                <h2>添加练习动作</h2>
+              </div>
+              <p>手动写下这周的练习任务，例如笔试、作品集或项目表达。</p>
+              <div className="draft-edit-grid weekly-task-form-grid">
+                <label className="wide-field">
+                  <span>动作标题</span>
+                  <input
+                    autoFocus
+                    value={weeklyTaskForm.title}
+                    onChange={(event) => setWeeklyTaskForm((form) => (form ? { ...form, title: event.target.value } : form))}
+                    placeholder="例如：整理一版项目表达"
+                  />
+                </label>
+                <label className="wide-field">
+                  <span>备注说明</span>
+                  <textarea
+                    value={weeklyTaskForm.detail}
+                    onChange={(event) => setWeeklyTaskForm((form) => (form ? { ...form, detail: event.target.value } : form))}
+                    placeholder="例如：练一道笔试题，或整理一个项目表达。"
+                  />
+                </label>
+                <label>
+                  <span>优先级</span>
+                  <select
+                    value={weeklyTaskForm.level ?? "P2"}
+                    onChange={(event) =>
+                      setWeeklyTaskForm((form) => (form ? { ...form, level: event.target.value as WeeklyTask["level"] } : form))
+                    }
+                  >
+                    <option value="P0">今天必须做</option>
+                    <option value="P1">优先推进</option>
+                    <option value="P2">正常练习</option>
+                    <option value="P3">低优先</option>
+                  </select>
+                </label>
+              </div>
+              <div className="button-row confirm-actions">
+                <button className="primary-button" onClick={submitWeeklyTaskForm}>
+                  添加动作
+                </button>
+                <button className="secondary-button" onClick={() => setWeeklyTaskForm(null)}>
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {confirmDialog && (
           <div
             className="asset-preview confirm-dialog"
@@ -3857,6 +4017,40 @@ function WeeklyTagEditor({
           添加
         </button>
       </div>
+    </div>
+  );
+}
+
+function ListPager({
+  page,
+  pageCount,
+  onPageChange,
+  alwaysShow = false,
+  className = "",
+}: {
+  page: number;
+  pageCount: number;
+  onPageChange: (nextPage: number) => void;
+  alwaysShow?: boolean;
+  className?: string;
+}) {
+  if (!alwaysShow && pageCount <= 1) return null;
+
+  return (
+    <div className={`pager-row ${className}`.trim()}>
+      <button className="ghost-button compact-button" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>
+        上一页
+      </button>
+      <span>
+        {page + 1} / {pageCount}
+      </span>
+      <button
+        className="ghost-button compact-button"
+        disabled={page >= pageCount - 1}
+        onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
+      >
+        下一页
+      </button>
     </div>
   );
 }

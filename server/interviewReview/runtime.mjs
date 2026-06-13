@@ -15,8 +15,9 @@ export const resolveInterviewReviewRuntime = (config = {}) => {
     concurrency: slowProvider ? 1 : 2,
     maxTokens: slowProvider ? 4_800 : 6_400,
     chunkOptions: slowProvider
-      ? { charLimit: 4_500, overlap: 600, maxChunks: 10 }
-      : DEFAULT_CHUNK_OPTIONS,
-    retryOnTimeout: slowProvider,
+      ? { charLimit: 4_500, overlap: 600, absoluteMaxChunks: 48 }
+      : { ...DEFAULT_CHUNK_OPTIONS, absoluteMaxChunks: 32 },
+    maxRetries: slowProvider ? 4 : 3,
+    retryDelayMs: slowProvider ? 10_000 : 5_000,
   };
 };

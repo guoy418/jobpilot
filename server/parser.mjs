@@ -100,8 +100,8 @@ const toParsedQa = (question, answer = "") => {
   };
 };
 
-const parseParagraphQaPairs = (transcript = "") => {
-  const questionMatches = [...String(transcript).matchAll(/([^。！？\n]{4,160}[?？])/g)];
+const parseParagraphQaPairs = (transcript = "", limit = 12) => {
+  const questionMatches = [...String(transcript).matchAll(/([^。！？\n]{4,240}[?？])/g)];
   return questionMatches
     .map((match, index) => {
       const question = match[0];
@@ -111,10 +111,11 @@ const parseParagraphQaPairs = (transcript = "") => {
       return toParsedQa(question, answer);
     })
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, limit);
 };
 
-export const parseTranscriptQaPairs = (transcript = "") => {
+export const parseTranscriptQaPairs = (transcript = "", options = {}) => {
+  const limit = typeof options === "number" ? options : (options.limit ?? 12);
   const lines = String(transcript)
     .split(/\r?\n/)
     .map(cleanTranscriptLine)
@@ -151,9 +152,9 @@ export const parseTranscriptQaPairs = (transcript = "") => {
   }
   flush();
 
-  if (parsed.length) return parsed.slice(0, 12);
+  if (parsed.length) return parsed.slice(0, limit);
 
-  return parseParagraphQaPairs(transcript);
+  return parseParagraphQaPairs(transcript, limit);
 };
 
 export const parseOpportunityDraft = (payload) => {

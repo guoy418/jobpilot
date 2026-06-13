@@ -950,7 +950,10 @@ export const createRepository = (db) => {
     const session = getInterview(interviewId);
     if (!session) return null;
     const timestamp = nowIso();
-    const id = input.id || makeId("QA");
+    let id = input.id || makeId("QA");
+    if (db.prepare("SELECT 1 FROM qa_pairs WHERE id = ?").get(id)) {
+      id = makeId("QA");
+    }
     const nextSortOrder =
       db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS sort_order FROM qa_pairs WHERE interview_session_id = ?").get(interviewId).sort_order ?? 0;
     db.prepare(`

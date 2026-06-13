@@ -16,6 +16,8 @@ export const buildChunkReviewPrompt = (payload = {}, fallback = {}, chunk, revie
     "你是中文面试复盘教练。请只基于当前面试稿片段，识别真实问题，并直接生成每题复盘。",
     "输出 JSON: company, role, round, date, qaPairs。",
     "qaPairs 每项字段: question, originalAnswer, type, score, critique, weak, framework, optimizedAnswer, sourceChunkId, isPartial, boundaryNote。",
+    "originalAnswer 必须从面试稿完整摘录候选人原话，尽量一字不漏，保留口语；不要概括、缩写、改写或只写摘要。",
+    "如果回答跨片段未完，isPartial=true，并只摘录当前片段里真实出现的部分；本地会合并相邻片段。",
     "type 取值: PROJECT, TECHNICAL, MOTIVATION, BEHAVIORAL, PRODUCT, CASE, ENGLISH, OTHER。",
     "critique 要具体指出原回答缺失的背景、动作、指标、取舍或复盘。",
     "framework 要给 4-6 步回答组织方式。",

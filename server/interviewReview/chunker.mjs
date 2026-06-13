@@ -3,7 +3,27 @@ import { compact } from "./schema.mjs";
 export const DEFAULT_CHUNK_OPTIONS = {
   charLimit: 6_000,
   overlap: 900,
-  maxChunks: 8,
+  absoluteMaxChunks: 40,
+};
+
+export const estimateRequiredChunkCount = (textLength = 0, options = {}) => {
+  const charLimit = options.charLimit ?? DEFAULT_CHUNK_OPTIONS.charLimit;
+  const overlap = options.overlap ?? DEFAULT_CHUNK_OPTIONS.overlap;
+  if (textLength <= charLimit) return 1;
+  const step = Math.max(1, charLimit - overlap);
+  return Math.ceil((textLength - overlap) / step);
+};
+
+export const resolveChunkBudget = (textLength = 0, options = {}) => {
+  const settings = { ...DEFAULT_CHUNK_OPTIONS, ...options };
+  const requiredChunks = estimateRequiredChunkCount(textLength, settings);
+  const absoluteMaxChunks = settings.absoluteMaxChunks ?? DEFAULT_CHUNK_OPTIONS.absoluteMaxChunks;
+  return {
+    ...settings,
+    requiredChunks,
+    absoluteMaxChunks,
+    truncated: requiredChunks > absoluteMaxChunks,
+  };
 };
 
 const insertSpeakerBreaks = (text = "") =>
@@ -15,7 +35,7 @@ const insertSpeakerBreaks = (text = "") =>
 const splitOversizedSegment = (segment, options) => {
   const chunks = [];
   const step = Math.max(1, options.charLimit - options.overlap);
-  for (let start = 0; start < segment.length && chunks.length < options.maxChunks; start += step) {
+  for (let start = 0; start < segment.length; start += step) {
     chunks.push(segment.slice(start, start + options.charLimit));
   }
   return chunks;
@@ -38,11 +58,21 @@ const tailWithinOverlap = (segments, overlap) => {
 };
 
 export const splitInterviewTranscriptChunks = (text = "", options = {}) => {
-  const settings = { ...DEFAULT_CHUNK_OPTIONS, ...options };
   const sourceText = insertSpeakerBreaks(text);
-  if (!sourceText) return [];
+  if (!sourceText) {
+    return { chunks: [], truncated: false, requiredChunks: 0, processedChunks: 0, sourceCharLength: 0 };
+  }
+
+  const budget = resolveChunkBudget(sourceText.length, options);
+  const settings = budget;
   if (sourceText.length <= settings.charLimit) {
-    return [{ id: "chunk-1", index: 0, total: 1, text: sourceText }];
+    return {
+      chunks: [{ id: "chunk-1", index: 0, total: 1, text: sourceText }],
+      truncated: false,
+      requiredChunks: 1,
+      processedChunks: 1,
+      sourceCharLength: sourceText.length,
+    };
   }
 
   const chunks = [];
@@ -53,16 +83,15 @@ export const splitInterviewTranscriptChunks = (text = "", options = {}) => {
   let currentSegments = [];
 
   const pushCurrent = () => {
-    if (!currentSegments.length || chunks.length >= settings.maxChunks) return;
+    if (!currentSegments.length) return;
     chunks.push(currentSegments.join("\n\n"));
     currentSegments = tailWithinOverlap(currentSegments, settings.overlap);
   };
 
   for (const segment of segments.length ? segments : [sourceText]) {
-    if (chunks.length >= settings.maxChunks) break;
     if (segment.length > settings.charLimit) {
       pushCurrent();
-      chunks.push(...splitOversizedSegment(segment, settings).slice(0, settings.maxChunks - chunks.length));
+      chunks.push(...splitOversizedSegment(segment, settings));
       currentSegments = [];
       continue;
     }
@@ -80,11 +109,18 @@ export const splitInterviewTranscriptChunks = (text = "", options = {}) => {
   }
   pushCurrent();
 
-  const limited = chunks.slice(0, settings.maxChunks);
-  return limited.map((chunk, index) => ({
-    id: `chunk-${index + 1}`,
-    index,
-    total: limited.length,
-    text: chunk,
-  }));
+  const truncated = chunks.length > settings.absoluteMaxChunks || budget.truncated;
+  const limited = chunks.slice(0, settings.absoluteMaxChunks);
+  return {
+    chunks: limited.map((chunk, index) => ({
+      id: `chunk-${index + 1}`,
+      index,
+      total: limited.length,
+      text: chunk,
+    })),
+    truncated,
+    requiredChunks: Math.max(budget.requiredChunks, chunks.length),
+    processedChunks: limited.length,
+    sourceCharLength: sourceText.length,
+  };
 };

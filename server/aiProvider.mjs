@@ -147,7 +147,7 @@ const kimiCompatible = (config) => {
 };
 
 const requestTemperature = (config, task = "chat") => {
-  if (kimiCompatible(config)) return 1;
+  if (kimiCompatible(config)) return task === "vision" ? 1 : 0.3;
   return task === "vision" ? 0 : 0.2;
 };
 

@@ -499,17 +499,107 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(300px, 0.7fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .home-side {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  align-content: start;
+  min-height: 100%;
+}
+
+.home-side > .instrument-panel,
+.home-side > .surface,
+.home-side > .weekly-strip-button {
+  width: 100%;
+}
+
+.home-side .weekly-strip-button {
+  margin-top: auto;
 }
 
 .today-panel {
-  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.paginated-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.paginated-pane-header {
+  flex-shrink: 0;
+}
+
+.paginated-pane-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.paginated-pane-footer {
+  margin-top: auto;
+  margin-bottom: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-visible);
+  flex-shrink: 0;
+}
+
+.paginated-pane-content {
+  flex: 1;
+  padding-bottom: 12px;
+}
+
+.today-panel .paginated-pane-header .hero-actions {
+  margin-bottom: 0;
+}
+
+.today-panel .today-action-list {
+  align-content: start;
+}
+
+.interview-card-grid.paginated-pane-content,
+.answer-list.paginated-pane-content {
+  min-height: calc(2 * 138px + 12px);
+  align-content: start;
+}
+
+.weekly-groups-page {
+  display: grid;
+  gap: 18px;
+}
+
+.weekly-section-pager {
+  margin-top: 12px;
+  margin-bottom: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-visible);
+}
+
+.weekly-task-group .weekly-task-list {
+  min-height: 0;
+}
+
+.paginated-table-content {
+  min-height: calc(6 * 64px + 40px);
+}
+
+.board.board-embedded.paginated-pane-content,
+.paginated-pane-body > .board.board-embedded {
+  flex: 1;
+  min-height: calc(6 * 120px);
+  align-content: start;
+}
+
+.table-page.paginated-pane,
+.interview-list-pane.paginated-pane,
+.answer-list-pane.paginated-pane,
+.weekly-board.paginated-pane {
+  min-height: calc(100vh - 136px);
 }
 
 .today-heading {
@@ -659,7 +749,8 @@ h1 {
 
 .compact-metrics {
   padding: 1px;
-  align-self: start;
+  width: 100%;
+  align-self: stretch;
   grid-template-columns: 1fr;
 }
 
@@ -1604,6 +1695,10 @@ small {
   margin-bottom: 18px;
 }
 
+.interview-detail-nav-start {
+  justify-content: flex-start;
+}
+
 .qa-directory-list {
   display: grid;
   gap: 12px;
@@ -2174,6 +2269,10 @@ small {
   margin-top: 2px;
 }
 
+.weekly-task-list .weekly-add-card {
+  min-height: 164px;
+}
+
 .weekly-add-card {
   border-style: dashed;
   color: var(--text-primary);
@@ -2726,6 +2825,23 @@ small {
   margin-top: 14px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.weekly-task-form-panel {
+  width: min(560px, 100%);
+}
+
+.weekly-task-form-grid textarea {
+  min-height: 120px;
+}
+
+.weekly-task-form-grid label span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  text-transform: uppercase;
 }
 
 .confirm-actions {

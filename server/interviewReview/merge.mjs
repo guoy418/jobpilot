@@ -1,25 +1,37 @@
 import { compact, normalizeInterviewReviewPair } from "./schema.mjs";
-
-const normalizeQuestionKey = (question = "") =>
-  compact(question)
-    .toLowerCase()
-    .replace(/[？?。！!，,、；;：:\s"'“”‘’（）()[\]{}<>《》]/g, "")
-    .replace(/^(?:请|能不能|可以|麻烦你|简单)?(?:介绍|讲讲|说说|描述一下)/, "讲")
-    .slice(0, 80);
-
-const areSimilarQuestions = (left = "", right = "") => {
-  const leftKey = normalizeQuestionKey(left);
-  const rightKey = normalizeQuestionKey(right);
-  if (!leftKey || !rightKey) return false;
-  return leftKey === rightKey || (leftKey.length > 10 && rightKey.includes(leftKey)) || (rightKey.length > 10 && leftKey.includes(rightKey));
-};
+import { areSimilarQuestions } from "./transcriptAnswers.mjs";
 
 const hasContent = (value = "") => compact(value) && compact(value) !== "待补充原回答。";
 
 const preferLonger = (current = "", next = "") => (compact(next).length > compact(current).length ? next : current);
 
+export const mergeOriginalAnswers = (left = "", right = "", options = {}) => {
+  const current = compact(left);
+  const incoming = compact(right);
+  if (!current) return incoming;
+  if (!incoming) return current;
+  if (current === incoming) return current;
+  if (incoming.includes(current)) return incoming;
+  if (current.includes(incoming)) return current;
+
+  for (let size = Math.min(current.length, incoming.length); size >= 3; size -= 1) {
+    if (current.slice(-size) === incoming.slice(0, size)) {
+      return `${current}${incoming.slice(size)}`;
+    }
+    if (incoming.slice(-size) === current.slice(0, size)) {
+      return `${incoming}${current.slice(size)}`;
+    }
+  }
+
+  if (options.allowConcat) {
+    return `${current}\n${incoming}`;
+  }
+
+  return preferLonger(current, incoming);
+};
+
 export const mergeInterviewReviewPairs = (pairs = [], options = {}) => {
-  const limit = options.limit ?? 24;
+  const limit = options.limit ?? Math.max(48, pairs.length);
   const merged = [];
 
   for (const pair of pairs) {
@@ -31,8 +43,10 @@ export const mergeInterviewReviewPairs = (pairs = [], options = {}) => {
       continue;
     }
 
-    if (hasContent(normalized.originalAnswer) && (!hasContent(existing.originalAnswer) || normalized.originalAnswer.length > existing.originalAnswer.length)) {
-      existing.originalAnswer = normalized.originalAnswer;
+    if (hasContent(normalized.originalAnswer) || hasContent(existing.originalAnswer)) {
+      existing.originalAnswer = mergeOriginalAnswers(existing.originalAnswer, normalized.originalAnswer, {
+        allowConcat: true,
+      });
     }
     if (normalized.isPartial === false && existing.isPartial === true) {
       existing.critique = normalized.critique;
