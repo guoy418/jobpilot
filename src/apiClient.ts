@@ -58,6 +58,10 @@ export type OpportunityProgressPayload = {
   action?: Opportunity["action"];
   actionManual?: boolean;
   nextAction?: string;
+  endedAt?: Opportunity["endedAt"];
+  endedReason?: Opportunity["endedReason"];
+  endedNote?: Opportunity["endedNote"];
+  previousStatus?: Opportunity["previousStatus"];
   timelineEvent?: {
     id: string;
     occurredAt: string;

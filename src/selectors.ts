@@ -81,12 +81,17 @@ const getWeeklyWindow = (weeklyPlan: WeeklyPlan, now = new Date()) => {
 };
 
 const getSubmittedAt = (opportunity: Opportunity, now = new Date()) => {
-  if (!submittedStatuses.includes(opportunity.status)) return null;
-  return opportunity.timeline
+  const submittedEvents = opportunity.timeline
     .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
     .map((event) => parseDateLike(event.occurredAt, now))
     .filter((date): date is Date => Boolean(date))
-    .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
+    .sort((left, right) => left.getTime() - right.getTime());
+  if (!submittedEvents.length) return null;
+  const hasSubmittedStatus =
+    submittedStatuses.includes(opportunity.status) ||
+    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
+    opportunity.status === "ENDED";
+  return hasSubmittedStatus ? submittedEvents[0] : null;
 };
 
 const selectWeeklySubmittedApplications = (opportunities: Opportunity[], weeklyPlan: WeeklyPlan) => {
@@ -124,12 +129,13 @@ export const selectDashboardSummary = (
   interviewSessions: InterviewSession[],
   weeklyPlan: WeeklyPlan,
 ): DashboardSummary => {
-  const opportunityActions = opportunities.map(resolveOpportunityAction);
+  const activeOpportunities = opportunities.filter((item) => item.status !== "ENDED");
+  const opportunityActions = activeOpportunities.map(resolveOpportunityAction);
   const submittedApplications = selectWeeklySubmittedApplications(opportunities, weeklyPlan);
   const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
   const pendingReviewCount = interviewSessions.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
-  const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
-  const inProgressCount = opportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
+  const toApplyCount = activeOpportunities.filter((item) => item.status === "TO APPLY").length;
+  const inProgressCount = activeOpportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
   const p0Count = opportunityActions.filter((action) => action === "P0").length;
   const p1Count = opportunityActions.filter((action) => action === "P1").length;
   const weakInterviewCount = interviewSessions.filter((item) => item.qaPairs.some((pair) => pair.weak)).length;

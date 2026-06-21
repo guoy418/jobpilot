@@ -18,6 +18,7 @@ export const statusLabel: Record<OpportunityStatus, string> = {
   INTERVIEWING: "准备面试",
   WAITING: "等结果",
   OFFER: "Offer",
+  ENDED: "已结束",
 };
 
 export const sourceKindLabel: Record<SourceAsset["kind"], string> = {
@@ -38,6 +39,7 @@ export const opportunityStatusAction: Record<OpportunityStatus, OpportunityActio
   INTERVIEWING: "P1",
   WAITING: "P2",
   OFFER: "P3",
+  ENDED: "P3",
 };
 
 export const opportunityStatusNextAction: Record<OpportunityStatus, string> = {
@@ -48,6 +50,7 @@ export const opportunityStatusNextAction: Record<OpportunityStatus, string> = {
   INTERVIEWING: "准备下一轮面试",
   WAITING: "等待结果并准备复盘",
   OFFER: "整理 Offer 信息和取舍",
+  ENDED: "已结束，保留历史记录",
 };
 
 const dayMs = 24 * 60 * 60 * 1000;
@@ -61,6 +64,7 @@ const baseActionRank: Record<OpportunityStatus, number> = {
   INTERVIEWING: 1,
   WAITING: 2,
   OFFER: 3,
+  ENDED: 3,
 };
 
 const dateKey = (date: Date) => {
@@ -128,6 +132,7 @@ export const computeOpportunityAction = ({
   match?: OpportunityMatch;
   priority?: OpportunityPriority;
 }): OpportunityAction => {
+  if (status === "ENDED") return "P3";
   if (status === "OFFER") return "P3";
 
   const daysUntilDue = getOpportunityDaysUntilDue({ deadline: deadline ?? "", dueDate });
@@ -156,6 +161,7 @@ export const resolveOpportunityAction = (opportunity: {
   action?: OpportunityAction;
   actionManual?: boolean;
 }): OpportunityAction => {
+  if (opportunity.status === "ENDED") return "P3";
   if (opportunity.actionManual && opportunity.action) return opportunity.action;
   return computeOpportunityAction(opportunity);
 };
@@ -179,19 +185,21 @@ const hasTimelineSignal = (opportunity: Opportunity, keyword: string) =>
   opportunity.timeline.some((event) => `${event.title} ${event.detail}`.includes(keyword));
 
 export const buildOpportunityPipeline = (opportunity: Opportunity, sessions: InterviewSession[]): PipelineStage[] => {
-  const currentIndex = opportunityStatusFlow.indexOf(opportunity.status);
+  const restoredStatus = opportunity.previousStatus ?? undefined;
+  const currentStatus = opportunity.status === "ENDED" ? restoredStatus : opportunity.status;
+  const currentIndex = currentStatus ? opportunityStatusFlow.indexOf(currentStatus) : -1;
   const hasWrittenTest = opportunity.status === "WRITTEN TEST" || hasTimelineSignal(opportunity, "笔试");
   const hasInterview = sessions.length > 0 || opportunity.status === "INTERVIEWING" || opportunity.status === "WAITING" || opportunity.status === "OFFER";
 
   const stageState = (stageStatus: OpportunityStatus, optional = false): PipelineStageState => {
     const stageIndex = opportunityStatusFlow.indexOf(stageStatus);
-    if (stageStatus === opportunity.status) return "current";
+    if (stageStatus === currentStatus) return opportunity.status === "ENDED" ? "done" : "current";
     if (optional && stageStatus === "WRITTEN TEST" && currentIndex > stageIndex && !hasWrittenTest) return "skipped";
     if (stageIndex < currentIndex) return "done";
     return "next";
   };
 
-  return [
+  const stages: PipelineStage[] = [
     {
       key: "to-apply",
       label: "待投递",
@@ -247,4 +255,16 @@ export const buildOpportunityPipeline = (opportunity: Opportunity, sessions: Int
       source: "manual",
     },
   ];
+
+  if (opportunity.status === "ENDED") {
+    stages.push({
+      key: "ended",
+      label: "已结束",
+      state: "current",
+      detail: opportunity.endedAt ? `结束于 ${opportunity.endedAt}` : "已从默认推进视图和今日行动中隐藏",
+      source: "manual",
+    });
+  }
+
+  return stages;
 };

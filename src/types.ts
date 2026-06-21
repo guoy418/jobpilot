@@ -8,10 +8,11 @@ export type Page =
   | "weekly"
   | "exports";
 
-export type OpportunityStatus = "TO APPLY" | "APPLIED" | "WRITTEN TEST" | "SCREENING" | "INTERVIEWING" | "WAITING" | "OFFER";
+export type OpportunityStatus = "TO APPLY" | "APPLIED" | "WRITTEN TEST" | "SCREENING" | "INTERVIEWING" | "WAITING" | "OFFER" | "ENDED";
 export type OpportunityPriority = "A" | "B" | "C";
 export type OpportunityMatch = "HIGH" | "MEDIUM" | "LOW";
 export type OpportunityAction = "P0" | "P1" | "P2" | "P3";
+export type OpportunityEndReason = "REJECTED" | "CLOSED" | "WITHDRAWN" | "OTHER";
 
 export type OpportunityDraft = {
   kind: "opportunity";
@@ -84,6 +85,10 @@ export type Opportunity = {
   title: string;
   company: string;
   status: OpportunityStatus;
+  endedAt?: string | null;
+  endedReason?: OpportunityEndReason | null;
+  endedNote?: string | null;
+  previousStatus?: Exclude<OpportunityStatus, "ENDED"> | null;
   priority: OpportunityPriority;
   match: OpportunityMatch;
   action: OpportunityAction;

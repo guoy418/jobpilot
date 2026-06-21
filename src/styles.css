@@ -1647,6 +1647,12 @@ small {
   background: var(--priority-p2-bg);
 }
 
+.status-pill.ended {
+  border-color: color-mix(in srgb, var(--text-secondary) 34%, var(--border));
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--surface-raised) 72%, var(--border));
+}
+
 .status-pill.processing {
   border-color: color-mix(in srgb, var(--priority-p2) 34%, var(--border));
   color: var(--priority-p2);
@@ -2138,10 +2144,149 @@ small {
   margin-bottom: 0;
 }
 
+.opportunity-filter-groups {
+  display: grid;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-width: min(100%, 560px);
+}
+
+.opportunity-scope-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.opportunity-scope-tabs {
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  gap: 22px;
+}
+
+.opportunity-scope-tab,
+.opportunity-ended-link {
+  min-height: 34px;
+  padding: 0 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: color 160ms ease-out, opacity 160ms ease-out;
+}
+
+.opportunity-scope-tab {
+  position: relative;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.opportunity-scope-tab::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 3px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--text-display);
+  opacity: 0;
+  transform: scaleX(0.72);
+  transition: opacity 160ms ease-out, transform 160ms ease-out;
+}
+
+.opportunity-scope-tab:hover,
+.opportunity-scope-tab.active-scope-tab {
+  color: var(--text-display);
+}
+
+.opportunity-scope-tab.active-scope-tab {
+  font-weight: 700;
+}
+
+.opportunity-scope-tab.active-scope-tab::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.opportunity-ended-link {
+  justify-self: end;
+  font-family: "Space Mono", "JetBrains Mono", monospace;
+  font-size: 11px;
+  opacity: 0.72;
+  white-space: nowrap;
+}
+
+.opportunity-ended-link:hover,
+.opportunity-ended-link.active-ended-link {
+  color: var(--text-display);
+  opacity: 1;
+}
+
+.opportunity-filter-bar {
+  align-items: center;
+  gap: 6px;
+}
+
+.opportunity-filter-bar button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--button-secondary-border) 74%, transparent);
+  background: color-mix(in srgb, var(--button-ghost-hover-bg) 30%, transparent);
+}
+
+.opportunity-filter-bar button.active-filter {
+  background: color-mix(in srgb, var(--button-active-bg) 82%, transparent);
+}
+
+.opportunity-filter-separator {
+  color: var(--text-disabled);
+  padding: 0 2px;
+  user-select: none;
+}
+
 .view-toggle {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
+}
+
+.view-mode-switch {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--button-secondary-border) 64%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 58%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-display) 5%, transparent);
+}
+
+.view-toggle .view-mode-segment {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+.view-toggle .view-mode-segment:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--button-ghost-hover-bg) 58%, transparent);
+  color: var(--text-display);
+}
+
+.view-toggle .view-mode-segment.active-view-mode {
+  background: color-mix(in srgb, var(--interactive) 13%, var(--surface));
+  color: var(--text-display);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive) 20%, transparent);
+}
+
+.view-mode-segment svg {
+  flex: 0 0 auto;
 }
 
 .primary-chip {
@@ -2236,7 +2381,7 @@ small {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(7, minmax(220px, 1fr));
+  grid-template-columns: repeat(var(--board-column-count, 7), minmax(220px, 1fr));
   gap: 16px;
   overflow-x: auto;
 }
@@ -2252,6 +2397,47 @@ small {
 
 .board-embedded .board-column {
   min-height: 420px;
+}
+
+.board-column-ended {
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.board-column-empty {
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.board-column-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+}
+
+.board-column-pager button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+  color: var(--text-secondary);
+}
+
+.board-column-pager button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .job-card,
@@ -2271,6 +2457,24 @@ small {
   display: block;
 }
 
+.board-job-card {
+  padding: 14px 16px;
+}
+
+.job-card-ended {
+  background: color-mix(in srgb, var(--surface-raised) 54%, var(--surface));
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.job-card.job-card-ended h3 {
+  color: var(--text-secondary);
+}
+
+.job-card.job-card-ended p,
+.job-card.job-card-ended small {
+  color: var(--text-muted);
+}
+
 .job-card h3,
 .qa-card h3,
 .answer-card h3 {
@@ -2280,12 +2484,20 @@ small {
   line-height: 1.25;
 }
 
+.board-job-card h3 {
+  margin-top: 8px;
+}
+
 .job-card p,
 .qa-card p {
   margin-top: 8px;
   color: var(--text-secondary);
   font-size: var(--fs-meta);
   line-height: 1.5;
+}
+
+.board-job-card p {
+  margin-top: 6px;
 }
 
 .qa-list {
@@ -3866,6 +4078,56 @@ small {
   color: var(--text-display);
 }
 
+.opportunity-end-panel {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.opportunity-end-copy {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.opportunity-end-question {
+  color: var(--text-secondary);
+  font-size: var(--fs-meta);
+}
+
+.opportunity-ended-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px 3px 3px;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 24%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+}
+
+.opportunity-ended-status strong {
+  color: var(--text-display);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.opportunity-end-help {
+  flex: 0 0 auto;
+}
+
+.opportunity-end-panel .compact-button {
+  min-height: 30px;
+  padding-inline: 11px;
+}
+
 .opportunity-progress-note {
   margin: 12px 0 0;
   color: var(--text-secondary);
@@ -4017,7 +4279,7 @@ small {
 }
 
 .confirm-panel {
-  width: min(420px, 100%);
+  width: min(520px, 100%);
 }
 
 .confirm-panel p {
@@ -4046,6 +4308,53 @@ small {
 .confirm-actions {
   margin-top: 24px;
   justify-content: flex-end;
+}
+
+.end-opportunity-form {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.end-opportunity-form > span,
+.end-opportunity-form label span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-family: "Space Mono", monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.end-reason-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.end-reason-grid button {
+  min-height: 40px;
+  border: 1px solid var(--button-secondary-border);
+  border-radius: 999px;
+  background: var(--button-ghost-bg);
+  color: var(--button-ghost-text);
+}
+
+.end-reason-grid button.active-filter {
+  border-color: var(--button-active-border);
+  background: var(--button-active-bg);
+  color: var(--button-active-text);
+}
+
+.end-opportunity-form textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  padding: 12px;
 }
 
 .composer-grid {
@@ -4398,6 +4707,20 @@ small {
 
   .topbar {
     gap: 10px;
+  }
+
+  .view-toggle {
+    justify-content: space-between;
+  }
+
+  .view-mode-segment span {
+    display: none;
+  }
+
+  .view-toggle .view-mode-segment {
+    width: 34px;
+    justify-content: center;
+    padding: 0;
   }
 
   .flow-pipeline-steps {

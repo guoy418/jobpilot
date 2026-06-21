@@ -16,6 +16,7 @@ const opportunityStatusAction = {
   INTERVIEWING: "P1",
   WAITING: "P2",
   OFFER: "P3",
+  ENDED: "P3",
 };
 const opportunityStatusLabel = {
   "TO APPLY": "待投递",
@@ -25,6 +26,7 @@ const opportunityStatusLabel = {
   INTERVIEWING: "准备面试",
   WAITING: "等结果",
   OFFER: "Offer",
+  ENDED: "已结束",
 };
 const opportunityStatusNextAction = {
   "TO APPLY": "补齐材料后投递",
@@ -34,6 +36,7 @@ const opportunityStatusNextAction = {
   INTERVIEWING: "准备下一轮面试",
   WAITING: "等待反馈并定期跟进",
   OFFER: "整理 offer 对比和入职材料",
+  ENDED: "已结束，保留历史记录",
 };
 
 const UNCATEGORIZED_ANSWER_CATEGORY_ID = "CAT-UNCATEGORIZED";
@@ -61,6 +64,7 @@ const baseActionRank = {
   INTERVIEWING: 1,
   WAITING: 2,
   OFFER: 3,
+  ENDED: 3,
 };
 
 const dateKey = (date) => {
@@ -141,14 +145,17 @@ const getWeeklyWindow = (weeklyPlan, now = new Date()) => {
 };
 
 const getSubmittedAt = (opportunity, now = new Date()) => {
-  if (!submittedStatuses.includes(opportunity.status)) return null;
-  return (
-    opportunity.timeline
-      .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
-      .map((event) => parseDateLike(event.occurredAt, now))
-      .filter(Boolean)
-      .sort((left, right) => left.getTime() - right.getTime())[0] ?? null
-  );
+  const submittedEvents = opportunity.timeline
+    .filter((event) => event.status === "done" && submittedTimelinePattern.test(`${event.title} ${event.detail}`))
+    .map((event) => parseDateLike(event.occurredAt, now))
+    .filter(Boolean)
+    .sort((left, right) => left.getTime() - right.getTime());
+  if (!submittedEvents.length) return null;
+  const hasSubmittedStatus =
+    submittedStatuses.includes(opportunity.status) ||
+    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
+    opportunity.status === "ENDED";
+  return hasSubmittedStatus ? submittedEvents[0] : null;
 };
 
 const selectWeeklySubmittedApplications = (opportunities, weeklyPlan) => {
@@ -161,6 +168,7 @@ const selectWeeklySubmittedApplications = (opportunities, weeklyPlan) => {
 };
 
 const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match = "MEDIUM", priority = "B" }) => {
+  if (status === "ENDED") return "P3";
   if (status === "OFFER") return "P3";
   const daysUntilDue = getOpportunityDaysUntilDue({ deadline, dueDate });
   let rank = baseActionRank[status] ?? actionPriorityRank.P2;
@@ -176,6 +184,7 @@ const computeOpportunityAction = ({ status, deadline = "", dueDate = "", match =
 };
 
 const resolveOpportunityAction = (opportunity) => {
+  if (opportunity.status === "ENDED") return "P3";
   if (opportunity.actionManual && opportunity.action) return opportunity.action;
   return computeOpportunityAction(opportunity);
 };
@@ -250,19 +259,21 @@ const hasTimelineSignal = (opportunity, keyword) =>
   opportunity.timeline.some((event) => `${event.title} ${event.detail}`.includes(keyword));
 
 const buildOpportunityPipeline = (opportunity, sessions) => {
-  const currentIndex = opportunityStatusFlow.indexOf(opportunity.status);
+  const restoredStatus = opportunity.previousStatus && opportunity.previousStatus !== "ENDED" ? opportunity.previousStatus : undefined;
+  const currentStatus = opportunity.status === "ENDED" ? restoredStatus : opportunity.status;
+  const currentIndex = currentStatus ? opportunityStatusFlow.indexOf(currentStatus) : -1;
   const hasWrittenTest = opportunity.status === "WRITTEN TEST" || hasTimelineSignal(opportunity, "笔试");
   const hasInterview = sessions.length > 0 || ["INTERVIEWING", "WAITING", "OFFER"].includes(opportunity.status);
 
   const stageState = (stageStatus, optional = false) => {
     const stageIndex = opportunityStatusFlow.indexOf(stageStatus);
-    if (stageStatus === opportunity.status) return "current";
+    if (stageStatus === currentStatus) return opportunity.status === "ENDED" ? "done" : "current";
     if (optional && stageStatus === "WRITTEN TEST" && currentIndex > stageIndex && !hasWrittenTest) return "skipped";
     if (stageIndex < currentIndex) return "done";
     return "next";
   };
 
-  return [
+  const stages = [
     {
       key: "to-apply",
       label: "待投递",
@@ -318,6 +329,18 @@ const buildOpportunityPipeline = (opportunity, sessions) => {
       source: "manual",
     },
   ];
+
+  if (opportunity.status === "ENDED") {
+    stages.push({
+      key: "ended",
+      label: "已结束",
+      state: "current",
+      detail: opportunity.endedAt ? `结束于 ${opportunity.endedAt}` : "已从默认推进视图和今日行动中隐藏",
+      source: "manual",
+    });
+  }
+
+  return stages;
 };
 
 const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
@@ -325,6 +348,10 @@ const toOpportunity = (row, sourceAssets = [], timeline = []) => ({
   title: row.title,
   company: row.company,
   status: row.status,
+  endedAt: row.ended_at ?? undefined,
+  endedReason: row.ended_reason ?? undefined,
+  endedNote: row.ended_note ?? undefined,
+  previousStatus: row.previous_status ?? undefined,
   priority: row.priority,
   match: row.match,
   action: row.action,
@@ -459,6 +486,10 @@ const createSchema = (db) => {
       title TEXT NOT NULL,
       company TEXT NOT NULL,
       status TEXT NOT NULL,
+      ended_at TEXT,
+      ended_reason TEXT,
+      ended_note TEXT,
+      previous_status TEXT,
       priority TEXT NOT NULL,
       match TEXT NOT NULL,
       action TEXT NOT NULL,
@@ -619,6 +650,10 @@ const ensureColumn = (db, tableName, columnName, definition) => {
 const migrateSchema = (db) => {
   ensureColumn(db, "opportunities", "due_date", "TEXT");
   ensureColumn(db, "opportunities", "action_manual", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "opportunities", "ended_at", "TEXT");
+  ensureColumn(db, "opportunities", "ended_reason", "TEXT");
+  ensureColumn(db, "opportunities", "ended_note", "TEXT");
+  ensureColumn(db, "opportunities", "previous_status", "TEXT");
   ensureColumn(db, "opportunity_source_assets", "storage_uri", "TEXT");
   ensureColumn(db, "interview_sessions", "review_priority", "TEXT NOT NULL DEFAULT 'P1'");
   ensureColumn(db, "interview_source_files", "content", "TEXT");
@@ -938,6 +973,10 @@ export const createRepository = (db) => {
   const createOpportunity = (input) => {
     const timestamp = nowIso();
     const status = input.status || "TO APPLY";
+    const endedAt = status === "ENDED" ? input.endedAt || nowIso() : input.endedAt || null;
+    const endedReason = status === "ENDED" ? input.endedReason || "OTHER" : input.endedReason || null;
+    const endedNote = input.endedNote?.trim() || null;
+    const previousStatus = status === "ENDED" ? input.previousStatus || "APPLIED" : input.previousStatus || null;
     const deadline = input.deadline?.trim() || "待定";
     const dueDate = input.dueDate || inferDueDateFromText(deadline);
     const priority = input.priority || "B";
@@ -947,14 +986,18 @@ export const createRepository = (db) => {
     const id = input.id || makeId("OP");
     db.prepare(`
       INSERT INTO opportunities (
-        id, title, company, status, priority, match, action, action_manual, city, deadline, due_date, resume_id,
+        id, title, company, status, ended_at, ended_reason, ended_note, previous_status, priority, match, action, action_manual, city, deadline, due_date, resume_id,
         next_action, jd_summary, jd_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.title?.trim() || "未填写岗位",
       input.company?.trim() || "未填写公司",
       status,
+      endedAt,
+      endedReason,
+      endedNote,
+      previousStatus,
       priority,
       match,
       action,
@@ -981,6 +1024,18 @@ export const createRepository = (db) => {
       ...current,
       ...patch,
     };
+    if (patch.status === "ENDED") {
+      next.endedAt = patch.endedAt || current.endedAt || nowIso();
+      next.endedReason = patch.endedReason || current.endedReason || "OTHER";
+      next.endedNote = patch.endedNote ?? current.endedNote ?? null;
+      next.previousStatus =
+        patch.previousStatus || current.previousStatus || (current.status !== "ENDED" ? current.status : "APPLIED");
+    } else if ("status" in patch && patch.status && patch.status !== "ENDED") {
+      next.endedAt = patch.endedAt ?? null;
+      next.endedReason = patch.endedReason ?? null;
+      next.endedNote = patch.endedNote ?? null;
+      next.previousStatus = patch.previousStatus ?? null;
+    }
     if ("deadline" in patch && !("dueDate" in patch)) next.dueDate = inferDueDateFromText(next.deadline);
     if (!next.actionManual && ["status", "deadline", "dueDate", "priority", "match"].some((field) => field in patch) && !("action" in patch)) {
       next.action = computeOpportunityAction(next);
@@ -993,6 +1048,10 @@ export const createRepository = (db) => {
       SET title = ?,
           company = ?,
           status = ?,
+          ended_at = ?,
+          ended_reason = ?,
+          ended_note = ?,
+          previous_status = ?,
           priority = ?,
           match = ?,
           action = ?,
@@ -1010,6 +1069,10 @@ export const createRepository = (db) => {
       next.title,
       next.company,
       next.status,
+      next.endedAt ?? null,
+      next.endedReason ?? null,
+      next.endedNote ?? null,
+      next.previousStatus ?? null,
       next.priority,
       next.match,
       next.action,
@@ -1044,7 +1107,7 @@ export const createRepository = (db) => {
     const nextTimeline = [
       ...current.timeline.filter((event) => event.status !== "next"),
       progressEvent,
-      ...(status !== "OFFER"
+      ...(status !== "OFFER" && status !== "ENDED"
         ? [
             {
               id: makeId("TL"),
@@ -1058,6 +1121,21 @@ export const createRepository = (db) => {
     ];
     const updatedOpportunity = updateOpportunity(id, {
       status,
+      ...(status === "ENDED"
+        ? {
+            endedAt: input.endedAt || nowIso(),
+            endedReason: input.endedReason || "OTHER",
+            endedNote: input.endedNote ?? null,
+            previousStatus: input.previousStatus || current.previousStatus || (current.status !== "ENDED" ? current.status : "APPLIED"),
+          }
+        : current.status === "ENDED"
+          ? {
+              endedAt: null,
+              endedReason: null,
+              endedNote: null,
+              previousStatus: null,
+            }
+          : {}),
       ...(current.actionManual ? {} : { action: input.action || computeOpportunityAction({ ...current, status }) }),
       nextAction,
       timeline: nextTimeline,
@@ -1671,12 +1749,13 @@ export const createRepository = (db) => {
     const opportunities = listOpportunities();
     const interviews = listInterviews();
     const weeklyPlan = getCurrentWeeklyPlan();
-    const opportunityActions = opportunities.map(resolveOpportunityAction);
+    const activeOpportunities = opportunities.filter((item) => item.status !== "ENDED");
+    const opportunityActions = activeOpportunities.map(resolveOpportunityAction);
     const submittedApplications = selectWeeklySubmittedApplications(opportunities, weeklyPlan);
     const urgentCount = opportunityActions.filter((action) => action === "P0" || action === "P1").length;
     const pendingReviewCount = interviews.flatMap((item) => item.qaPairs).filter((pair) => pair.weak).length;
-    const toApplyCount = opportunities.filter((item) => item.status === "TO APPLY").length;
-    const inProgressCount = opportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
+    const toApplyCount = activeOpportunities.filter((item) => item.status === "TO APPLY").length;
+    const inProgressCount = activeOpportunities.filter((item) => item.status !== "TO APPLY" && item.status !== "OFFER").length;
     const p0Count = opportunityActions.filter((action) => action === "P0").length;
     const p1Count = opportunityActions.filter((action) => action === "P1").length;
     const weakInterviewCount = interviews.filter((item) => item.qaPairs.some((pair) => pair.weak)).length;

@@ -1123,9 +1123,90 @@ const todayActionsAfterLinkedInterview = await fetch(`${API_URL}/api/dashboard/t
 if (todayActionsAfterLinkedInterview.some((action) => action.source === "opportunity" && action.targetId === tempOpportunity.id)) {
   throw new Error("POST linked /api/interviews should not create waiting follow-up today action");
 }
+console.log("PASS POST linked /api/interviews advances opportunity");
+
+const reinterviewingProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "INTERVIEWING",
+    timelineEvent: {
+      title: "API check reinterviewing before end",
+      detail: "temporary",
+      occurredAt: "Now",
+    },
+  }),
+});
+if (!reinterviewingProgress.ok) throw new Error(`reinterviewing POST /api/opportunities/:id/progress returned ${reinterviewingProgress.status}`);
+await expectOpportunityTodayAction(tempOpportunity.id, "restored INTERVIEWING opportunity before end");
+console.log("PASS INTERVIEWING opportunity active before ending");
+
+const endedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: "ENDED",
+    endedAt: "2026-06-22",
+    endedReason: "REJECTED",
+    endedNote: "API check ended note",
+    previousStatus: "INTERVIEWING",
+    nextAction: "已结束，保留历史记录",
+  }),
+});
+if (!endedOpportunity.ok) throw new Error(`PATCH ended /api/opportunities/:id returned ${endedOpportunity.status}`);
+const endedOpportunityPayload = await endedOpportunity.json();
+if (
+  endedOpportunityPayload.status !== "ENDED" ||
+  endedOpportunityPayload.endedReason !== "REJECTED" ||
+  endedOpportunityPayload.previousStatus !== "INTERVIEWING"
+) {
+  throw new Error("PATCH /api/opportunities/:id did not persist ended fields");
+}
+const fetchedEndedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`).then((response) => response.json());
+const listedEndedOpportunity = (await fetch(`${API_URL}/api/opportunities`).then((response) => response.json())).find((opportunity) => opportunity.id === tempOpportunity.id);
+if (fetchedEndedOpportunity.status !== "ENDED" || listedEndedOpportunity?.endedNote !== "API check ended note") {
+  throw new Error("GET/list did not return ended opportunity fields");
+}
+const linkedInterviewAfterEnd = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(linkedInterview.id)}`).then((response) => response.json());
+if (linkedInterviewAfterEnd.opportunityId !== tempOpportunity.id) {
+  throw new Error("ending opportunity should keep linked interview session");
+}
+const resumesAfterEnd = await fetch(`${API_URL}/api/resumes`).then((response) => response.json());
+const linkedResumeAfterEnd = resumesAfterEnd.find((resume) => resume.id === tempOpportunity.resumeId);
+if (!linkedResumeAfterEnd?.linkedOpportunityIds?.includes(tempOpportunity.id)) {
+  throw new Error("ending opportunity should keep resume linkedOpportunityIds");
+}
+await expectNoOpportunityTodayAction(tempOpportunity.id, "ENDED opportunity");
+console.log("PASS ENDED opportunity persists and leaves today actions");
+
+const restoredEndedOpportunity = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    status: endedOpportunityPayload.previousStatus,
+    endedAt: null,
+    endedReason: null,
+    endedNote: null,
+    previousStatus: null,
+    nextAction: "准备下一轮面试",
+  }),
+});
+if (!restoredEndedOpportunity.ok) throw new Error(`restore PATCH /api/opportunities/:id returned ${restoredEndedOpportunity.status}`);
+const restoredEndedOpportunityPayload = await restoredEndedOpportunity.json();
+if (
+  restoredEndedOpportunityPayload.status !== "INTERVIEWING" ||
+  restoredEndedOpportunityPayload.endedAt ||
+  restoredEndedOpportunityPayload.endedReason ||
+  restoredEndedOpportunityPayload.endedNote ||
+  restoredEndedOpportunityPayload.previousStatus
+) {
+  throw new Error("restore PATCH /api/opportunities/:id did not clear ended fields");
+}
+await expectOpportunityTodayAction(tempOpportunity.id, "restored INTERVIEWING opportunity");
+console.log("PASS restored ENDED opportunity re-enters active handling");
+
 const deletedLinkedInterview = await fetch(`${API_URL}/api/interviews/${encodeURIComponent(linkedInterview.id)}`, { method: "DELETE" });
 if (!deletedLinkedInterview.ok) throw new Error(`DELETE linked /api/interviews/:id returned ${deletedLinkedInterview.status}`);
-console.log("PASS POST linked /api/interviews advances opportunity");
 
 const offerProgress = await fetch(`${API_URL}/api/opportunities/${encodeURIComponent(tempOpportunity.id)}/progress`, {
   method: "POST",

@@ -111,6 +111,7 @@ import type {
   ModuleComposerSource,
   Opportunity,
   OpportunityAction,
+  OpportunityEndReason,
   OpportunityMatch,
   OpportunityPriority,
   OpportunityStatus,
@@ -202,7 +203,20 @@ type ConfirmDialogState = {
   title: string;
   description: string;
   confirmLabel: string;
+  eyebrow?: string;
+  confirmTone?: "danger" | "primary";
+  cancelLabel?: string;
+  contentKind?: "end-opportunity";
   onConfirm: () => void;
+};
+
+type OpportunityVisibilityFilter = "ACTIVE" | "ENDED" | "ALL";
+type OpportunityPriorityFilter = "ALL" | OpportunityAction;
+type OpportunityTagFilter = "HIGH_PRIORITY" | "HIGH_MATCH" | "DUE_SOON";
+
+type EndOpportunityDraft = {
+  reason: OpportunityEndReason;
+  note: string;
 };
 
 type WeeklyTaskFormDraft = {
@@ -224,6 +238,44 @@ type AnswerCategoryEditorState =
     };
 
 const allAnswerCategoryId = "all";
+const activeOpportunityBoardStatuses = opportunityStatusFlow.filter((status) => status !== "ENDED");
+
+const endReasonLabel: Record<OpportunityEndReason, string> = {
+  REJECTED: "被拒",
+  CLOSED: "岗位关闭",
+  WITHDRAWN: "不再考虑",
+  OTHER: "其他",
+};
+
+const endReasonOptions: Array<{ value: OpportunityEndReason; label: string }> = [
+  { value: "REJECTED", label: "被拒" },
+  { value: "CLOSED", label: "岗位关闭" },
+  { value: "WITHDRAWN", label: "不再考虑" },
+  { value: "OTHER", label: "其他" },
+];
+
+const opportunityVisibilityOptions: Array<{ value: Extract<OpportunityVisibilityFilter, "ACTIVE" | "ALL">; label: string }> = [
+  { value: "ACTIVE", label: "推进中" },
+  { value: "ALL", label: "全部记录" },
+];
+
+const opportunityPriorityOptions: Array<{ value: OpportunityPriorityFilter; label: string }> = [
+  { value: "ALL", label: "全部" },
+  { value: "P0", label: "P0" },
+  { value: "P1", label: "P1" },
+  { value: "P2", label: "P2" },
+];
+
+const opportunityTagOptions: Array<{ value: OpportunityTagFilter; label: string }> = [
+  { value: "HIGH_PRIORITY", label: "高意愿" },
+  { value: "HIGH_MATCH", label: "高匹配" },
+  { value: "DUE_SOON", label: "快截止" },
+];
+
+const emptyEndOpportunityDraft = (): EndOpportunityDraft => ({
+  reason: "REJECTED",
+  note: "",
+});
 
 const emptyWeeklyTaskForm = (): WeeklyTaskFormDraft => ({
   title: "",
@@ -325,17 +377,20 @@ const topSearchPlaceholder = (currentPage: Page) => {
   return "搜索岗位、公司、备注";
 };
 
-const opportunityFilterLabel = (value: string) => {
-  const labels: Record<string, string> = {
-    ALL: "全部",
-    P0: "P0",
-    P1: "P1",
-    "A PRIORITY": "高意愿",
-    "HIGH MATCH": "高匹配",
-    "DUE SOON": "快截止",
-  };
-  return labels[value] ?? value;
+const formatEndedDate = (value?: string | null) => {
+  if (!value) return "未记录日期";
+  const datePart = value.split("T")[0];
+  const dateKeyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(datePart);
+  const parsed = dateKeyMatch
+    ? new Date(Number(dateKeyMatch[1]), Number(dateKeyMatch[2]) - 1, Number(dateKeyMatch[3]))
+    : new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(parsed);
+  }
+  return value;
 };
+
+const isActiveOpportunityStatus = (status: OpportunityStatus) => status !== "ENDED";
 
 const completedOpportunityStatus = (status: OpportunityStatus): OpportunityStatus | null => {
   if (status === "TO APPLY") return "APPLIED";
@@ -557,7 +612,8 @@ const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: Today
 
 const GRID_PAGE_SIZE = 6;
 const WEEKLY_PRACTICE_FIRST_PAGE_TASKS = 5;
-const TABLE_PAGE_SIZE = 6;
+const OPPORTUNITY_TABLE_PAGE_SIZE = 6;
+const OPPORTUNITY_BOARD_COLUMN_PAGE_SIZE = 3;
 
 const listPageCount = (length: number, pageSize: number) => Math.max(1, Math.ceil(length / pageSize));
 
@@ -741,7 +797,9 @@ function App() {
   const [randomPracticeAnswerId, setRandomPracticeAnswerId] = useState("");
   const [randomPracticeSpinning, setRandomPracticeSpinning] = useState(false);
   const [randomPracticeReveal, setRandomPracticeReveal] = useState(false);
-  const [filter, setFilter] = useState("ALL");
+  const [opportunityVisibility, setOpportunityVisibility] = useState<OpportunityVisibilityFilter>("ACTIVE");
+  const [opportunityPriorityFilter, setOpportunityPriorityFilter] = useState<OpportunityPriorityFilter>("ALL");
+  const [opportunityTagFilters, setOpportunityTagFilters] = useState<OpportunityTagFilter[]>([]);
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [apiMode, setApiMode] = useState<ApiModeState>(() =>
     isPublicDemo ? { status: "demo" } : isApiEnabled ? { status: "checking" } : { status: "mock" },
@@ -767,6 +825,7 @@ function App() {
   const [previewAsset, setPreviewAsset] = useState<SourceAsset | null>(null);
   const [previewSessionFile, setPreviewSessionFile] = useState<SessionFile | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [endOpportunityDraft, setEndOpportunityDraft] = useState<EndOpportunityDraft>(() => emptyEndOpportunityDraft());
   const [weeklyTaskForm, setWeeklyTaskForm] = useState<WeeklyTaskFormDraft | null>(null);
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
   const [dismissedTodayIds, setDismissedTodayIds] = useState<Set<string>>(() => loadDismissedTodayIds());
@@ -783,6 +842,7 @@ function App() {
     createModuleComposerDraft(resumeVersions[0]?.id ?? "", seedOpportunities[0]?.id ?? ""),
   );
   const apiOpportunityIdsRef = useRef(new Set(seedOpportunities.map((item) => item.id)));
+  const endOpportunityDraftRef = useRef<EndOpportunityDraft>(emptyEndOpportunityDraft());
   const modalBackdropPointerStartedRef = useRef(false);
 
   const markApiOnline = (health?: ApiHealth) => {
@@ -812,9 +872,10 @@ function App() {
   };
 
   const applyLoadedData = (data: InitialApiData | JobPilotBackup) => {
+    const firstActiveOpportunity = data.opportunities.find((item) => item.status !== "ENDED") ?? data.opportunities[0];
     setOpportunities(data.opportunities);
     apiOpportunityIdsRef.current = new Set(data.opportunities.map((item) => item.id));
-    setSelectedOpportunityId(data.opportunities[0]?.id ?? "");
+    setSelectedOpportunityId(firstActiveOpportunity?.id ?? "");
     setInterviewSessions(data.interviewSessions);
     setSelectedInterviewId(data.interviewSessions[0]?.id ?? "");
     setSelectedQaId(data.interviewSessions[0]?.qaPairs[0]?.id ?? "");
@@ -899,7 +960,7 @@ function App() {
       .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
-  const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities[0];
+  const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities.find((item) => item.status !== "ENDED") ?? opportunities[0];
   const selectedInterview = interviewSessions.find((item) => item.id === selectedInterviewId) ?? interviewSessions[0];
   const selectedQa = selectedInterview.qaPairs.find((item) => item.id === selectedQaId) ?? selectedInterview.qaPairs[0];
   const selectedAnswer = answerCards.find((item) => item.id === selectedAnswerId) ?? answerCards[0];
@@ -1038,23 +1099,45 @@ function App() {
   );
   const visibleTrainingTaskCount = weeklyTaskGroups.reduce((count, group) => count + group.tasks.length, 0);
 
+  const selectOpportunityPriorityFilter = (nextFilter: OpportunityPriorityFilter) => {
+    setOpportunityPriorityFilter(nextFilter);
+    setOpportunityPage(0);
+  };
+
+  const toggleOpportunityTagFilter = (tag: OpportunityTagFilter) => {
+    setOpportunityTagFilters((currentFilters) =>
+      currentFilters.includes(tag) ? currentFilters.filter((item) => item !== tag) : [...currentFilters, tag],
+    );
+    setOpportunityPage(0);
+  };
+
+  const selectOpportunityViewMode = (nextViewMode: ViewMode) => {
+    if (nextViewMode === viewMode) return;
+    setViewMode(nextViewMode);
+    setOpportunityPage(0);
+  };
+
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
       const resumeName = resumeList.find((resume) => resume.id === item.resumeId)?.name ?? item.resumeId;
       const haystack = `${item.title} ${item.company} ${item.city} ${item.nextAction} ${resumeName}`.toLowerCase();
       const matchesQuery = haystack.includes(normalizedQuery);
+      const matchesVisibility =
+        opportunityVisibility === "ALL" ||
+        (opportunityVisibility === "ACTIVE" && isActiveOpportunityStatus(item.status)) ||
+        (opportunityVisibility === "ENDED" && item.status === "ENDED");
       const computedAction = resolveOpportunityAction(item);
-      const matchesFilter =
-        filter === "ALL" ||
-        computedAction === filter ||
-        (filter === "A PRIORITY" && item.priority === "A") ||
-        (filter === "HIGH MATCH" && item.match === "HIGH") ||
-        (filter === "DUE SOON" && isOpportunityDueSoon(item));
-      return matchesQuery && matchesFilter;
+      const matchesPriority = opportunityPriorityFilter === "ALL" || computedAction === opportunityPriorityFilter;
+      const matchesTags = opportunityTagFilters.every((tag) => {
+        if (tag === "HIGH_PRIORITY") return item.priority === "A";
+        if (tag === "HIGH_MATCH") return item.match === "HIGH";
+        return isOpportunityDueSoon(item);
+      });
+      return matchesVisibility && matchesPriority && matchesTags && matchesQuery;
     });
-  }, [opportunities, normalizedQuery, filter, resumeList]);
-  const opportunityList = paginateList(filteredOpportunities, opportunityPage, TABLE_PAGE_SIZE);
-  const visibleOpportunities = opportunityList.visible;
+  }, [opportunities, normalizedQuery, opportunityPriorityFilter, opportunityTagFilters, resumeList, opportunityVisibility]);
+  const opportunityList = paginateList(filteredOpportunities, opportunityPage, OPPORTUNITY_TABLE_PAGE_SIZE);
+  const visibleTableOpportunities = opportunityList.visible;
   const opportunityPageCount = opportunityList.pageCount;
   const safeOpportunityPage = opportunityList.safePage;
 
@@ -1070,6 +1153,9 @@ function App() {
   const selectedOpportunityHistoryDraft = selectedOpportunity
     ? opportunityHistoryDrafts[selectedOpportunity.id] ?? formatOpportunityHistory(selectedOpportunity.timeline)
     : "";
+  const selectedOpportunityEnded = selectedOpportunity?.status === "ENDED";
+  const selectedOpportunityEndReason = selectedOpportunity?.endedReason ? endReasonLabel[selectedOpportunity.endedReason] : "其他";
+  const selectedOpportunityHeaderAction = selectedOpportunityEnded ? "已结束" : selectedOpportunityAction;
 
   const goTo = (nextPage: Page) => {
     setPage(nextPage);
@@ -2668,7 +2754,7 @@ function App() {
       timeline: [
         ...opportunity.timeline.filter((event) => event.status !== "next"),
         timelineEvent,
-        ...(status !== "OFFER"
+        ...(status !== "OFFER" && status !== "ENDED"
           ? [
               {
                 id: makeId("TL"),
@@ -2730,9 +2816,135 @@ function App() {
     applyOpportunityProgress(selectedOpportunity.id, "APPLIED", "manual", `使用 ${getResumeName(selectedOpportunity.resumeId)} 完成投递`);
   };
 
+  const updateEndOpportunityDraft = (patch: Partial<EndOpportunityDraft>) => {
+    endOpportunityDraftRef.current = { ...endOpportunityDraftRef.current, ...patch };
+    setEndOpportunityDraft(endOpportunityDraftRef.current);
+  };
+
+  const endSelectedOpportunity = () => {
+    if (!selectedOpportunity || selectedOpportunity.status === "ENDED") return;
+    const draft = endOpportunityDraftRef.current;
+    const endedAt = todayDateKey();
+    const note = draft.note.trim();
+    const nextTimeline: TimelineEvent[] = [
+      ...selectedOpportunity.timeline.filter((event) => event.status !== "next"),
+      {
+        id: makeId("TL"),
+        occurredAt: endedAt,
+        title: `已结束：${endReasonLabel[draft.reason]}`,
+        detail: note || "结束后保留面试复盘、简历关联、原始材料和时间线。",
+        status: "done",
+      },
+    ];
+    const patch: Partial<Opportunity> = {
+      status: "ENDED",
+      endedAt,
+      endedReason: draft.reason,
+      endedNote: note || null,
+      previousStatus: selectedOpportunity.status,
+      nextAction: "已结束，保留历史记录",
+      timeline: nextTimeline,
+    };
+    setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...patch } : item)));
+    setApiTodayActions(null);
+    setApiDashboardSummary(null);
+    syncUpdatedOpportunity(selectedOpportunity.id, patch);
+    setSystemMessage("岗位已标记为已结束");
+  };
+
+  const requestEndSelectedOpportunity = () => {
+    if (!selectedOpportunity || selectedOpportunity.status === "ENDED") return;
+    const draft = emptyEndOpportunityDraft();
+    endOpportunityDraftRef.current = draft;
+    setEndOpportunityDraft(draft);
+    requestConfirm({
+      eyebrow: "结束岗位",
+      title: "将这个岗位标记为已结束？",
+      description: "结束后它会从默认「推进中」列表和「今日行动」隐藏，但会保留面试复盘、简历关联、原始材料和时间线。这个操作不是删除。",
+      confirmLabel: "确认已结束",
+      confirmTone: "primary",
+      cancelLabel: "继续推进",
+      contentKind: "end-opportunity",
+      onConfirm: endSelectedOpportunity,
+    });
+  };
+
+  const restoreSelectedOpportunity = () => {
+    if (!selectedOpportunity || selectedOpportunity.status !== "ENDED") return;
+    const restoredStatus: Exclude<OpportunityStatus, "ENDED"> =
+      selectedOpportunity.previousStatus
+        ? selectedOpportunity.previousStatus
+        : interviewSessions.some((session) => session.opportunityId === selectedOpportunity.id)
+          ? "WAITING"
+          : "APPLIED";
+    const restoredAt = todayDateKey();
+    const nextAction = opportunityStatusNextAction[restoredStatus];
+    const nextTimeline: TimelineEvent[] = [
+      ...selectedOpportunity.timeline.filter((event) => event.status !== "next"),
+      {
+        id: makeId("TL"),
+        occurredAt: restoredAt,
+        title: `恢复推进为${statusLabel[restoredStatus]}`,
+        detail: "已清除结束状态，重新进入岗位推进。",
+        status: "done",
+      },
+      ...(restoredStatus !== "OFFER"
+        ? [
+            {
+              id: makeId("TL"),
+              occurredAt: "Next",
+              title: nextAction,
+              detail: "恢复推进后生成下一步动作",
+              status: "next" as const,
+            },
+          ]
+        : []),
+    ];
+    const patch: Partial<Opportunity> = {
+      status: restoredStatus,
+      endedAt: null,
+      endedReason: null,
+      endedNote: null,
+      previousStatus: null,
+      nextAction,
+      action: selectedOpportunity.actionManual ? selectedOpportunity.action : computeOpportunityAction({ ...selectedOpportunity, status: restoredStatus }),
+      timeline: nextTimeline,
+    };
+    setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...patch } : item)));
+    setApiTodayActions(null);
+    setApiDashboardSummary(null);
+    syncUpdatedOpportunity(selectedOpportunity.id, patch);
+    setSystemMessage("岗位已恢复推进");
+  };
+
+  const applyOpportunityActionFilter = (actionFilter: string) => {
+    const normalizedFilter = actionFilter.trim();
+    if (!normalizedFilter) return;
+
+    if (normalizedFilter === "ALL" || reviewPriorityOptions.some((item) => item.value === normalizedFilter)) {
+      setOpportunityPriorityFilter(normalizedFilter as OpportunityPriorityFilter);
+      setOpportunityTagFilters([]);
+      setOpportunityPage(0);
+      return;
+    }
+
+    const legacyTagFilterMap: Record<string, OpportunityTagFilter> = {
+      "A PRIORITY": "HIGH_PRIORITY",
+      "HIGH MATCH": "HIGH_MATCH",
+      "DUE SOON": "DUE_SOON",
+    };
+    const tagFilter = legacyTagFilterMap[normalizedFilter];
+    if (tagFilter) {
+      setOpportunityPriorityFilter("ALL");
+      setOpportunityTagFilters([tagFilter]);
+      setOpportunityPage(0);
+    }
+  };
+
   const openTodayAction = (action: TodayAction) => {
-    if (action.filter) setFilter(action.filter);
+    if (action.filter) applyOpportunityActionFilter(action.filter);
     if (action.page === "opportunityDetail") {
+      setOpportunityVisibility("ACTIVE");
       const targetOpportunityId = action.targetId || opportunities.find((item) => resolveOpportunityAction(item) === "P0")?.id || opportunities[0]?.id;
       if (targetOpportunityId) openOpportunity(targetOpportunityId);
     } else if (action.page === "interviews" && action.targetId) {
@@ -2801,7 +3013,10 @@ function App() {
           icon: BriefcaseBusiness,
           action: () => {
             if (toApplyCount > 0) {
-              setFilter("P0");
+              setOpportunityVisibility("ACTIVE");
+              setOpportunityPriorityFilter("P0");
+              setOpportunityTagFilters([]);
+              setOpportunityPage(0);
               goTo("opportunities");
               return;
             }
@@ -3289,26 +3504,75 @@ function App() {
                 action={`${filteredOpportunities.length} 个岗位`}
               />
               <div className="toolbar-row">
-                <div className="filter-bar">
-                  {["ALL", "P0", "P1", "A PRIORITY", "HIGH MATCH", "DUE SOON"].map((item) => (
-                    <button key={item} className={filter === item ? "active-filter" : ""} onClick={() => { setFilter(item); setOpportunityPage(0); }}>
-                      {opportunityFilterLabel(item)}
+                <div className="opportunity-filter-groups">
+                  <div className="opportunity-scope-row" aria-label="岗位记录范围">
+                    <div className="opportunity-scope-tabs">
+                      {opportunityVisibilityOptions.map((item) => (
+                        <button
+                          key={item.value}
+                          className={`opportunity-scope-tab ${opportunityVisibility === item.value ? "active-scope-tab" : ""}`}
+                          onClick={() => {
+                            setOpportunityVisibility(item.value);
+                            setOpportunityPage(0);
+                          }}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className={`opportunity-ended-link ${opportunityVisibility === "ENDED" ? "active-ended-link" : ""}`}
+                      onClick={() => {
+                        setOpportunityVisibility(opportunityVisibility === "ENDED" ? "ACTIVE" : "ENDED");
+                        setOpportunityPage(0);
+                      }}
+                    >
+                      {opportunityVisibility === "ENDED" ? "查看推进中" : "查看已结束记录"}
                     </button>
-                  ))}
+                  </div>
+                  <div className="filter-bar opportunity-filter-bar" aria-label="岗位筛选">
+                    {opportunityPriorityOptions.map((item) => (
+                      <button key={item.value} className={opportunityPriorityFilter === item.value ? "active-filter" : ""} onClick={() => selectOpportunityPriorityFilter(item.value)}>
+                        {item.label}
+                      </button>
+                    ))}
+                    <span className="opportunity-filter-separator" aria-hidden="true">|</span>
+                    {opportunityTagOptions.map((item) => (
+                      <button key={item.value} className={opportunityTagFilters.includes(item.value) ? "active-filter" : ""} onClick={() => toggleOpportunityTagFilter(item.value)}>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="view-toggle">
-                  <button className="primary-chip" onClick={() => openComposer("opportunity")}>
+                  <button className="primary-chip" type="button" onClick={() => openComposer("opportunity")}>
                     <Plus size={14} />
                     新增岗位
                   </button>
-                  <button className={viewMode === "table" ? "active-filter" : ""} onClick={() => setViewMode("table")}>
-                    <FileText size={14} />
-                    表格
-                  </button>
-                  <button className={viewMode === "board" ? "active-filter" : ""} onClick={() => setViewMode("board")}>
-                    <KanbanSquare size={14} />
-                    看板
-                  </button>
+                  <div className="view-mode-switch" role="group" aria-label="岗位展示方式">
+                    <button
+                      className={`view-mode-segment ${viewMode === "table" ? "active-view-mode" : ""}`}
+                      type="button"
+                      onClick={() => selectOpportunityViewMode("table")}
+                      aria-label="切换为表格视图"
+                      aria-pressed={viewMode === "table"}
+                      title="表格视图"
+                    >
+                      <FileText size={14} aria-hidden="true" />
+                      <span>表格</span>
+                    </button>
+                    <button
+                      className={`view-mode-segment ${viewMode === "board" ? "active-view-mode" : ""}`}
+                      type="button"
+                      onClick={() => selectOpportunityViewMode("board")}
+                      aria-label="切换为看板视图"
+                      aria-pressed={viewMode === "board"}
+                      title="看板视图"
+                    >
+                      <KanbanSquare size={14} aria-hidden="true" />
+                      <span>看板</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3323,7 +3587,7 @@ function App() {
                     <span>截止日期</span>
                     <span>下一步动作</span>
                   </div>
-                  {visibleOpportunities.map((item) => (
+                  {visibleTableOpportunities.map((item) => (
                     <button className="table-row table-button" key={item.id} onClick={() => openOpportunity(item.id)}>
                       <span>
                         <strong>{item.title}</strong>
@@ -3341,11 +3605,13 @@ function App() {
                 </div>
               ) : (
                 <div className="paginated-pane-content">
-                  <BoardView opportunities={visibleOpportunities} openOpportunity={openOpportunity} />
+                  <BoardView opportunities={filteredOpportunities} scope={opportunityVisibility} openOpportunity={openOpportunity} />
                 </div>
               )}
             </div>
-            <ListPager alwaysShow className="paginated-pane-footer" page={safeOpportunityPage} pageCount={opportunityPageCount} onPageChange={setOpportunityPage} />
+            {viewMode === "table" && (
+              <ListPager alwaysShow className="paginated-pane-footer" page={safeOpportunityPage} pageCount={opportunityPageCount} onPageChange={setOpportunityPage} />
+            )}
           </section>
         )}
 
@@ -3360,7 +3626,7 @@ function App() {
                 label={selectedOpportunity.id}
                 title={selectedOpportunity.title}
                 detail="这里记录这份岗位的进度、原始材料和备注。"
-                action={selectedOpportunityAction}
+                action={selectedOpportunityHeaderAction}
               />
               <div className="source-panel">
                 <SectionTitle label="材料" title="原始材料" action={`${selectedOpportunity.sourceAssets.length} 份`} />
@@ -3468,19 +3734,23 @@ function App() {
                 </label>
               </div>
               <div className="button-row">
-                <button className="primary-button" onClick={markOpportunityApplied}>标记已投递</button>
+                {!selectedOpportunityEnded ? (
+                  <button className="primary-button" onClick={markOpportunityApplied}>标记已投递</button>
+                ) : null}
                 <button className="secondary-button" onClick={() => openComposer("interview", selectedOpportunity.id)}>添加面试</button>
               </div>
               <div className="opportunity-status-section">
                 <SectionTitle label="岗位进度" title="进度" action={statusLabel[selectedOpportunity.status]} />
                 <div className="opportunity-progress-track" aria-label={`当前进度：${statusLabel[selectedOpportunity.status]}`}>
                   {opportunityStatusFlow.map((status, index) => {
-                    const currentIndex = opportunityStatusFlow.indexOf(selectedOpportunity.status);
+                    const displayStatus = selectedOpportunityEnded ? selectedOpportunity.previousStatus : selectedOpportunity.status;
+                    const currentIndex = displayStatus ? opportunityStatusFlow.indexOf(displayStatus) : -1;
                     const state = index < currentIndex ? "done" : index === currentIndex ? "current" : "next";
                     return (
                       <button
                         key={status}
                         className={`opportunity-progress-step ${state}`}
+                        disabled={selectedOpportunityEnded}
                         onClick={() => applyOpportunityProgress(selectedOpportunity.id, status, "manual")}
                       >
                         <span>{index + 1}</span>
@@ -3489,15 +3759,58 @@ function App() {
                     );
                   })}
                 </div>
-                <p className="opportunity-progress-note">
-                  {selectedOpportunity.status === "TO APPLY"
-                    ? "今日行动里点完成后，会同步标记为已投递。"
-                    : selectedOpportunity.status === "WRITTEN TEST"
-                      ? "完成笔试行动后，会推进到筛选中。"
-                      : selectedOpportunity.status === "SCREENING"
-                        ? "筛选通过后，可以手动切到准备面试并生成面试准备待办。"
-                      : "阶段有变化时，可以直接点击上面的节点更新。"}
-                </p>
+                {!selectedOpportunityEnded ? (
+                  <p className="opportunity-progress-note">
+                    {selectedOpportunity.status === "TO APPLY"
+                      ? "今日行动里点完成后，会同步标记为已投递。"
+                      : selectedOpportunity.status === "WRITTEN TEST"
+                        ? "完成笔试行动后，会推进到筛选中。"
+                        : selectedOpportunity.status === "SCREENING"
+                          ? "筛选通过后，可以手动切到准备面试并生成面试准备待办。"
+                          : "阶段有变化时，可以直接点击上面的节点更新。"}
+                  </p>
+                ) : null}
+                <div className={`opportunity-end-panel ${selectedOpportunityEnded ? "is-ended" : ""}`}>
+                  {selectedOpportunityEnded ? (
+                    <>
+                      <div className="opportunity-end-copy">
+                        <span className="opportunity-ended-status">
+                          <StatusPill status="ENDED" />
+                          <strong>已结束 · {selectedOpportunityEndReason} · {formatEndedDate(selectedOpportunity.endedAt)}</strong>
+                        </span>
+                        <span
+                          className="field-tooltip opportunity-end-help"
+                          tabIndex={0}
+                          data-tooltip="结束流程不会删除记录，也不会解绑面试复盘、简历或原始材料。"
+                          aria-label="结束流程保留内容说明"
+                        >
+                          ?
+                        </span>
+                      </div>
+                      <button className="secondary-button compact-button" onClick={restoreSelectedOpportunity} aria-label="恢复推进这个岗位">
+                        <RotateCcw size={14} />
+                        <span>恢复推进</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="opportunity-end-copy">
+                        <span className="opportunity-end-question">不再推进这个岗位？</span>
+                        <span
+                          className="field-tooltip opportunity-end-help"
+                          tabIndex={0}
+                          data-tooltip="结束流程不会删除记录，也不会解绑面试复盘、简历或原始材料。"
+                          aria-label="结束流程保留内容说明"
+                        >
+                          ?
+                        </span>
+                      </div>
+                      <button className="secondary-button compact-button" onClick={requestEndSelectedOpportunity} aria-label="结束跟进这个岗位">
+                        <span>结束跟进</span>
+                      </button>
+                    </>
+                  )}
+                </div>
                 <div className="opportunity-history-box">
                   <label>
                     <span>历史时间线</span>
@@ -4828,13 +5141,41 @@ function App() {
                 <X size={16} />
               </button>
               <div className="section-title">
-                <span>确认删除</span>
+                <span>{confirmDialog.eyebrow ?? "确认删除"}</span>
                 <h2>{confirmDialog.title}</h2>
               </div>
               <p>{confirmDialog.description}</p>
+              {confirmDialog.contentKind === "end-opportunity" ? (
+                <div className="end-opportunity-form">
+                  <span>结束原因</span>
+                  <div className="end-reason-grid">
+                    {endReasonOptions.map((option) => (
+                      <button
+                        type="button"
+                        key={option.value}
+                        className={endOpportunityDraft.reason === option.value ? "active-filter" : ""}
+                        onClick={() => updateEndOpportunityDraft({ reason: option.value })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <label>
+                    <span>备注（可选）</span>
+                    <textarea
+                      value={endOpportunityDraft.note}
+                      onChange={(event) => updateEndOpportunityDraft({ note: event.target.value })}
+                      placeholder="例如：HR 通知岗位暂停招聘；或自己决定不再继续。"
+                    />
+                  </label>
+                </div>
+              ) : null}
               <div className="button-row confirm-actions">
+                <button className="secondary-button" onClick={() => setConfirmDialog(null)}>
+                  {confirmDialog.cancelLabel ?? "取消"}
+                </button>
                 <button
-                  className="destructive-button"
+                  className={confirmDialog.confirmTone === "primary" ? "primary-button" : "destructive-button"}
                   onClick={() => {
                     confirmDialog.onConfirm();
                     setConfirmDialog(null);
@@ -5057,24 +5398,80 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function BoardView({ opportunities, openOpportunity }: { opportunities: Opportunity[]; openOpportunity: (id: string) => void }) {
+function BoardView({
+  opportunities,
+  scope,
+  openOpportunity,
+}: {
+  opportunities: Opportunity[];
+  scope: OpportunityVisibilityFilter;
+  openOpportunity: (id: string) => void;
+}) {
+  const [columnPages, setColumnPages] = useState<Partial<Record<OpportunityStatus, number>>>({});
+  const boardStatuses = useMemo<OpportunityStatus[]>(
+    () =>
+      scope === "ENDED"
+        ? ["ENDED"]
+        : scope === "ALL"
+          ? [...activeOpportunityBoardStatuses, "ENDED"]
+          : activeOpportunityBoardStatuses,
+    [scope],
+  );
+  const columnStateKey = useMemo(() => opportunities.map((item) => `${item.status}:${item.id}`).join("|"), [opportunities]);
+
+  useEffect(() => {
+    setColumnPages({});
+  }, [scope, columnStateKey]);
+
+  const setColumnPage = (status: OpportunityStatus, nextPage: number) => {
+    setColumnPages((current) => ({ ...current, [status]: nextPage }));
+  };
+
   return (
-    <section className="board board-embedded">
-      {opportunityStatusFlow.map((status) => (
-        <div className="board-column" key={status}>
-          <SectionTitle label="看板分组" title={statusLabel[status as Opportunity["status"]]} action={`${opportunities.filter((item) => item.status === status).length}`} />
-          {opportunities
-            .filter((item) => item.status === status)
-            .map((item) => (
-              <button className="job-card job-card-button" key={item.id} onClick={() => openOpportunity(item.id)}>
+    <section className="board board-embedded" style={{ "--board-column-count": Math.max(boardStatuses.length, 1) } as CSSProperties}>
+      {boardStatuses.map((status) => {
+        const columnOpportunities = opportunities.filter((item) => item.status === status);
+        const columnPage = columnPages[status] ?? 0;
+        const columnList = paginateList(columnOpportunities, columnPage, OPPORTUNITY_BOARD_COLUMN_PAGE_SIZE);
+        const isEndedColumn = status === "ENDED";
+
+        return (
+          <div className={`board-column ${isEndedColumn ? "board-column-ended" : ""}`} key={status}>
+            <SectionTitle label="看板分组" title={statusLabel[status]} action={`${columnOpportunities.length}`} />
+            {columnList.visible.map((item) => (
+              <button className={`job-card job-card-button board-job-card ${isEndedColumn ? "job-card-ended" : ""}`} key={item.id} onClick={() => openOpportunity(item.id)}>
                 <span className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</span>
                 <h3>{item.title}</h3>
                 <p>{item.company}</p>
-                <small>{item.nextAction}</small>
               </button>
             ))}
-        </div>
-      ))}
+            {columnOpportunities.length === 0 && <p className="board-column-empty">暂无岗位</p>}
+            {columnList.pageCount > 1 && (
+              <div className="board-column-pager" aria-label={`${statusLabel[status]}分页`}>
+                <button
+                  type="button"
+                  aria-label={`${statusLabel[status]}上一页`}
+                  disabled={columnList.safePage === 0}
+                  onClick={() => setColumnPage(status, Math.max(0, columnList.safePage - 1))}
+                >
+                  <ChevronLeft size={13} aria-hidden="true" />
+                </button>
+                <span>
+                  {columnList.safePage + 1} / {columnList.pageCount}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`${statusLabel[status]}下一页`}
+                  disabled={columnList.safePage >= columnList.pageCount - 1}
+                  onClick={() => setColumnPage(status, Math.min(columnList.pageCount - 1, columnList.safePage + 1))}
+                >
+                  <ChevronRight size={13} aria-hidden="true" />
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }
