@@ -95,6 +95,18 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app {
   min-height: 100vh;
   display: grid;
@@ -705,10 +717,10 @@ button:focus-visible {
   position: relative;
   min-height: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px 14px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 10px 10px;
   align-items: center;
-  padding: 14px 16px 14px 18px;
+  padding: 13px 14px 13px 18px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface-raised) 88%, var(--surface));
@@ -738,6 +750,8 @@ button:focus-visible {
 }
 
 .today-action-rank {
+  grid-column: 1;
+  grid-row: 1;
   align-self: start;
   color: var(--text-muted);
   font-family: "Space Mono", monospace;
@@ -746,6 +760,8 @@ button:focus-visible {
 }
 
 .today-action-open {
+  grid-column: 2;
+  grid-row: 1;
   display: grid;
   grid-template-columns: auto auto auto minmax(0, 1fr);
   gap: 10px;
@@ -755,6 +771,7 @@ button:focus-visible {
   background: transparent;
   color: var(--text-primary);
   text-align: left;
+  border-radius: 12px;
 }
 
 .today-action-icon {
@@ -788,15 +805,14 @@ button:focus-visible {
 }
 
 .today-action-context {
-  grid-column: 2 / -1;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
+  grid-column: 4;
+  grid-row: 1;
+  justify-self: end;
+  align-self: center;
 }
 
 .today-action-context summary {
   cursor: pointer;
-  color: var(--text-secondary);
-  font-size: 12px;
   list-style: none;
 }
 
@@ -804,13 +820,54 @@ button:focus-visible {
   display: none;
 }
 
-.today-action-context summary::after {
-  content: " +";
-  color: var(--text-muted);
+.today-action-disclosure {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  transition:
+    border-color 160ms ease-out,
+    background 160ms ease-out,
+    color 160ms ease-out;
 }
 
-.today-action-context[open] summary::after {
-  content: " -";
+.today-action-disclosure:hover,
+.today-action-disclosure:focus-visible {
+  border-color: var(--border-visible);
+  background: color-mix(in srgb, var(--surface-raised) 72%, var(--text-display) 3%);
+  color: var(--text-display);
+}
+
+.today-action-disclosure:focus-visible {
+  outline: 2px solid var(--button-focus-ring);
+  outline-offset: 2px;
+}
+
+.today-action-disclosure svg {
+  transition: transform 160ms ease-out;
+}
+
+.today-action-context[open] {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  justify-self: stretch;
+  align-self: stretch;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.today-action-context[open] .today-action-disclosure svg {
+  transform: rotate(90deg);
 }
 
 .today-action-context dl {
@@ -860,10 +917,43 @@ button:focus-visible {
   border-top: 1px solid var(--border-visible);
 }
 
+.today-secondary-list .action-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.today-secondary-list .action-row-main {
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.today-secondary-list .action-complete-button {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 .today-secondary-context {
-  grid-column: 1 / -1;
-  width: 100%;
+  grid-column: 3;
+  grid-row: 1;
+  width: auto;
   padding-top: 0;
+  border-top: 0;
+}
+
+.today-secondary-context .today-action-disclosure {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 10px;
+}
+
+.today-secondary-context[open] {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: 100%;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .home-empty-state {
@@ -4826,6 +4916,17 @@ small {
 
   .today-heading {
     grid-template-columns: 1fr;
+  }
+
+  .today-action-card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .today-action-card > .today-action-context,
+  .today-action-card > .today-action-context[open] {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-self: start;
   }
 
   .board {

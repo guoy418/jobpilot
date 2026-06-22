@@ -3561,7 +3561,10 @@ function App() {
                           <h3>{action.title}</h3>
                         </button>
                         <details className="today-action-context">
-                          <summary>查看来源和下一步</summary>
+                          <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
+                            <span>来源与下一步</span>
+                            <ChevronRight size={13} aria-hidden="true" />
+                          </summary>
                           <dl>
                             <div>
                               <dt>来源</dt>
@@ -3602,13 +3605,15 @@ function App() {
                                     {action.title}
                                   </strong>
                                 </span>
-                                <ChevronRight size={16} />
                               </button>
                               <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
                                 完成
                               </button>
                               <details className="today-action-context today-secondary-context">
-                                <summary>查看来源和下一步</summary>
+                                <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
+                                  <span className="visually-hidden">来源与下一步</span>
+                                  <ChevronRight size={14} aria-hidden="true" />
+                                </summary>
                                 <dl>
                                   <div>
                                     <dt>来源</dt>
