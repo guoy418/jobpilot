@@ -393,6 +393,27 @@ const formatEndedDate = (value?: string | null) => {
   return value;
 };
 
+const formatDueDateDisplay = (value?: string | null) => {
+  const text = value?.trim();
+  if (!text) return "";
+
+  const datePart = text.split("T")[0];
+  const dateKeyMatch = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(datePart);
+  if (dateKeyMatch) {
+    return `${dateKeyMatch[1]}-${dateKeyMatch[2].padStart(2, "0")}-${dateKeyMatch[3].padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  return text;
+};
+
 const isActiveOpportunityStatus = (status: OpportunityStatus) => status !== "ENDED";
 
 const completedOpportunityStatus = (status: OpportunityStatus): OpportunityStatus | null => {
@@ -700,16 +721,26 @@ function DatePickerInput({
   label: string;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const displayValue = formatDueDateDisplay(value);
 
   return (
     <div className="date-picker-control">
       <input
         id={id}
+        type="text"
+        readOnly
+        value={displayValue}
+        placeholder="选择日期"
+        aria-label={label}
+        onClick={() => openNativeDatePicker(inputRef.current)}
+      />
+      <input
         ref={inputRef}
+        className="date-picker-native"
         type="date"
         value={value}
-        aria-label={label}
-        onClick={(event) => openNativeDatePicker(event.currentTarget)}
+        tabIndex={-1}
+        aria-hidden="true"
         onChange={(event) => onChange(event.target.value)}
       />
       <button
@@ -1480,7 +1511,7 @@ function App() {
         fileName,
         roles: rawText.match(/产品|策略|增长/) ? "产品 / 策略" : rawText.match(/数据|SQL|Python/) ? "数据分析" : "前端 / 全栈",
         points: rawText || "文件已保存；如果没有读到内容，可以直接粘贴简历文字。",
-        summary: composerSource.note || "请确认简历定位和核心卖点。",
+        summary: "请确认简历定位和核心卖点。",
       }));
       }
 
@@ -1525,7 +1556,7 @@ function App() {
           rawText: sourceInputText,
           fileName,
           sourceKind: composerSource.sourceKind,
-          note: composerSource.note,
+          note: composer === "resume" ? "" : composerSource.note,
           storageUri: composerSource.storageUri,
           fileSize: composerSource.fileSize,
           company: composerDraft.company,
@@ -1743,6 +1774,22 @@ function App() {
     const nextPatch = shouldRecomputeAction ? { ...normalizedPatch, action: computeOpportunityAction(nextOpportunity) } : normalizedPatch;
     if ("actionManual" in normalizedPatch && normalizedPatch.actionManual === false && !("action" in normalizedPatch)) {
       nextPatch.action = computeOpportunityAction(nextOpportunity);
+    }
+    if ("resumeId" in nextPatch && selectedOpportunity.resumeId !== (nextPatch.resumeId ?? "")) {
+      const previousResumeId = selectedOpportunity.resumeId;
+      const nextResumeId = nextPatch.resumeId ?? "";
+      setResumeList((items) =>
+        items.map((resume) => {
+          if (resume.id === previousResumeId) {
+            return { ...resume, linkedOpportunityIds: resume.linkedOpportunityIds.filter((id) => id !== selectedOpportunity.id) };
+          }
+          if (resume.id === nextResumeId && !resume.linkedOpportunityIds.includes(selectedOpportunity.id)) {
+            return { ...resume, linkedOpportunityIds: [...resume.linkedOpportunityIds, selectedOpportunity.id] };
+          }
+          return resume;
+        }),
+      );
+      setResumeLinkedOpportunityPage(0);
     }
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...nextPatch } : item)));
     invalidateApiInsights();
@@ -2819,7 +2866,7 @@ function App() {
       uploadedAt: "Now",
       roles: composerDraft.roles.trim() || "待填写",
       points: composerDraft.points.trim() || "待填写核心卖点",
-      summary: composerDraft.summary.trim() || composerSource.note || "待填写文件摘要",
+      summary: composerDraft.summary.trim() || "待填写文件摘要",
       linkedOpportunityIds: [],
       storageUri: composerSource.storageUri,
     };
@@ -3192,7 +3239,7 @@ function App() {
     : applicationGap > 0
       ? {
           title: "今天还没有行动，先补岗位来源",
-          detail: `本周还差 ${applicationGap} 个投递，可以先新增一个岗位，把下一步投递动作放进今日行动。`,
+          detail: `本周还差 ${applicationGap} 个投递，可以先新增一个岗位。`,
           primaryLabel: "去投下一个岗位",
           primaryAction: () => openComposer("opportunity"),
           secondaryLabel: "查看岗位推进",
@@ -3660,7 +3707,7 @@ function App() {
               <PageIntro
                 label="岗位推进"
                 title="你正在跟进的岗位"
-                detail="按优先级、匹配度和截止时间管理投递备注。"
+                detail="按优先级、匹配度和截止时间管理投递岗位。"
                 action={`${filteredOpportunities.length} 个岗位`}
               />
               <div className="toolbar-row">
@@ -3779,7 +3826,7 @@ function App() {
                           <b className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</b>
                           <small>{item.priority} / {item.match}</small>
                         </span>
-                        <span className="mono">{getOpportunityDueDate(item)}</span>
+                        <span className="mono">{formatDueDateDisplay(getOpportunityDueDate(item)) || "待定"}</span>
                         <span>{item.nextAction}</span>
                       </button>
                     ))
@@ -3904,6 +3951,7 @@ function App() {
                 <label>
                   <span>使用简历</span>
                   <select value={selectedOpportunity.resumeId} onChange={(event) => updateSelectedOpportunity({ resumeId: event.target.value })}>
+                    <option value="">未选择简历</option>
                     {resumeList.map((resume) => (
                       <option key={resume.id} value={resume.id}>
                         {resume.name}
@@ -4581,7 +4629,7 @@ function App() {
                 <div>
                   <span className="eyebrow">{selectedResume.fileType} · {selectedResume.fileSize}</span>
                   <h2>{selectedResume.name}</h2>
-                  <p>{selectedResume.fileName} · 上传于 {selectedResume.uploadedAt}</p>
+                  <p>上传于 {selectedResume.uploadedAt}</p>
                 </div>
                 <button className="secondary-button compact-button" onClick={() => openStoredFile(selectedResume.storageUri)}>预览文件</button>
               </div>
@@ -4866,7 +4914,9 @@ function App() {
                     ? "选择你现在手里的材料：已经整理好的复盘文档可以直接导入；只有原始转写稿时，可以让系统帮你整理。"
                     : composer === "opportunity"
                       ? "上传 JD 文件，粘贴招聘链接，或直接粘贴文字至岗位描述。"
-                      : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
+                      : composer === "resume"
+                        ? "上传简历文件，系统会尽量帮你提取版本名称、适合方向和核心卖点。"
+                        : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
                   : composer === "opportunity"
                     ? "确认公司、岗位和下一步动作，可补充其他信息。"
                     : "请检查整理结果，补齐必要信息后保存。"}
@@ -4878,7 +4928,7 @@ function App() {
               </div>
 
               {composerStep === "source" && composer !== "answer" && (
-                <div className="composer-source-grid">
+                <div className={`composer-source-grid ${composer === "resume" ? "resume-file-only" : ""}`.trim()}>
                   {composer === "interview" && (
                     <div className="interview-import-mode wide-field">
                       <button
@@ -4942,19 +4992,14 @@ function App() {
                     />
                   </label>
 
-                  {composer !== "interview" && (
+                  {composer !== "interview" && composer !== "resume" && (
                     <div className="source-side">
                       <label>
                         <span>材料类型</span>
                         <select value={composerSource.sourceKind} onChange={(event) => updateComposerSource("sourceKind", event.target.value)}>
-                          {composer === "opportunity" && (
-                            <>
-                              <option value="jd-text">岗位描述 / 文件</option>
-                              <option value="screenshot">岗位截图</option>
-                              <option value="job-link">招聘链接</option>
-                            </>
-                          )}
-                          {composer === "resume" && <option value="resume-file">简历文件</option>}
+                          <option value="jd-text">岗位描述 / 文件</option>
+                          <option value="screenshot">岗位截图</option>
+                          <option value="job-link">招聘链接</option>
                         </select>
                       </label>
                       {composer === "opportunity" && composerSource.sourceKind === "job-link" ? (
@@ -4979,30 +5024,28 @@ function App() {
                     </div>
                   )}
 
-                  <label className="wide-field source-text-input">
-                    <span>
-                      {composer === "opportunity"
-                        ? "岗位描述"
-                        : composer === "interview"
-                          ? interviewInputMode === "review-json"
+                  {composer !== "resume" && (
+                    <label className="wide-field source-text-input">
+                      <span>
+                        {composer === "opportunity"
+                          ? "岗位描述"
+                          : composer === "interview" && interviewInputMode === "review-json"
                             ? "整理好的复盘内容"
-                            : "原始录音转写稿"
-                          : "简历文字或补充说明"}
-                    </span>
-                    <textarea
-                      value={composerSource.rawText}
-                      onChange={(event) => updateComposerSource("rawText", event.target.value)}
-                      placeholder={
-                        composer === "opportunity"
-                          ? "粘贴岗位描述后，可以继续确认岗位信息。"
-                          : composer === "interview"
-                            ? interviewInputMode === "review-json"
+                            : "原始录音转写稿"}
+                      </span>
+                      <textarea
+                        value={composerSource.rawText}
+                        onChange={(event) => updateComposerSource("rawText", event.target.value)}
+                        placeholder={
+                          composer === "opportunity"
+                            ? "粘贴岗位描述后，可以继续确认岗位信息。"
+                            : composer === "interview" && interviewInputMode === "review-json"
                               ? "把外部工具整理好的复盘粘贴到这里。内容应包含原问题、原回答、评价、优化框架、优化回答。"
                               : "把未整理的面试转写稿粘贴到这里。"
-                            : "粘贴简历摘要或正文后，可以继续确认简历信息。"
-                      }
-                    />
-                  </label>
+                        }
+                      />
+                    </label>
+                  )}
                   {composer === "interview" && interviewInputMode === "review-json" && (
                     <div className="wide-field interview-json-guide">
                       <div>
@@ -5115,6 +5158,7 @@ function App() {
                     <label>
                       <span>投递简历</span>
                       <select value={composerDraft.resumeId} onChange={(event) => updateComposerDraft("resumeId", event.target.value)}>
+                        <option value="">暂不选择简历</option>
                         {resumeList.map((resume) => (
                           <option value={resume.id} key={resume.id}>{resume.name}</option>
                         ))}
