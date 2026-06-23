@@ -1,6 +1,4 @@
 import {
-  Archive,
-  BookOpenCheck,
   BriefcaseBusiness,
   CalendarClock,
   Check,
@@ -17,21 +15,44 @@ import {
   KanbanSquare,
   Library,
   Moon,
-  Pencil,
-  PanelRight,
   Plus,
   RotateCcw,
   Search,
-  Send,
-  Settings,
-  Sparkles,
   Sun,
-  Trash2,
   Upload,
-  X,
 } from "lucide-react";
-import { type CSSProperties, type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
-import { isGarbledTextContent, readTextFile } from "./textEncoding";
+import { type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ApiModeBadge,
+  EmptyState,
+  ListPager,
+  PageIntro,
+  ReviewBlock,
+  SectionTitle,
+  SegmentedProgress,
+  StatRow,
+  StatusPill,
+  WeeklyTagEditor,
+} from "./components/AppPrimitives";
+import { BoardView } from "./components/BoardView";
+import { ConfirmDialog, type ConfirmDialogState, type EndOpportunityDraft } from "./components/ConfirmDialog";
+import { DatePickerInput } from "./components/DatePickerInput";
+import { ModuleComposerDialog } from "./components/ModuleComposerDialog";
+import { AssetPreviewDialog, SessionFilePreviewDialog } from "./components/PreviewDialogs";
+import { SettingsPage } from "./components/SettingsPage";
+import { WeeklyPage } from "./components/WeeklyPage";
+import { WeeklyTaskDialog } from "./components/WeeklyTaskDialog";
+import { useAiSettings, type AiSettings } from "./hooks/useAiSettings";
+import { useAnswerPracticeController } from "./hooks/useAnswerPracticeController";
+import { useApiInsights } from "./hooks/useApiInsights";
+import { useApiModeController } from "./hooks/useApiModeController";
+import { useDismissedTodayActions } from "./hooks/useDismissedTodayActions";
+import { useModuleComposerController } from "./hooks/useModuleComposerController";
+import { useThemePreference } from "./hooks/useThemePreference";
+import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
+import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
+import { InterviewsPage, type InterviewView, type QaUpdateField } from "./pages/InterviewsPage";
+import { isGarbledTextContent } from "./textEncoding";
 import {
   computeOpportunityAction,
   defaultOpportunityNextAction,
@@ -50,13 +71,10 @@ import {
   submittedStatuses,
 } from "./domain";
 import {
-  createModuleComposerDraft,
-  createModuleComposerSource,
   detectCity,
   detectCompany,
   detectRoleTitle,
   fileBaseName,
-  inferComposerSourceKind,
   parseInterviewReviewJson,
   parseTranscriptQaPairs,
 } from "./composerModel";
@@ -68,20 +86,15 @@ import {
   createOpportunityApi,
   createQaPairApi,
   createResumeVersionApi,
-  createWeeklyTaskApi,
   deleteAnswerCardApi,
   deleteAnswerCategoryApi,
   deleteInterviewSessionApi,
   deleteOpportunityApi,
   deleteQaPairApi,
   deleteResumeVersionApi,
-  deleteWeeklyTaskApi,
   exportBackupApi,
   getApiHealthApi,
-  getDashboardSummaryApi,
   getOpportunitiesApi,
-  getTodayActionsApi,
-  getWeeklyPlanApi,
   importBackupApi,
   loadInitialApiData,
   parseInterviewApi,
@@ -96,18 +109,38 @@ import {
   updateOpportunityApi,
   updateQaPairApi,
   updateResumeVersionApi,
-  updateWeeklyPlanApi,
-  updateWeeklyTaskApi,
-  uploadFileApi,
-  type ApiHealth,
 } from "./apiClient";
 import { apiBaseUrl, isApiEnabled, isPublicDemo } from "./appConfig";
 import { baseAnswerCards, baseAnswerCategories, baseWeeklyPlan, resumeVersions, seedInterviewSessions, seedOpportunities, uncategorizedAnswerCategoryId } from "./mockData";
-import { selectDashboardSummary, selectResumeName, selectTodayActions, type DashboardSummary, type TodayAction } from "./selectors";
+import { selectDashboardSummary, selectResumeName, selectTodayActions, type TodayAction } from "./selectors";
+import { formatDueDateDisplay, localDateKey as todayDateKey } from "./utils/date";
+import { BACKUP_SCHEMA_VERSION } from "./utils/backup";
+import { extractionStatusLabel, failedExtractionStatuses } from "./utils/composerSource";
+import {
+  composerValidationMessage,
+  formatComposerApiError,
+  getComposerAssistRequirement as composerAssistRequirement,
+  isComposerAiProviderConfigured as isAiProviderConfigured,
+  validateAnswerComposerDraft,
+  validateInterviewComposerDraft,
+  validateOpportunityComposerDraft,
+  validateResumeComposerDraft,
+  type ComposerValidationResult,
+} from "./utils/composerValidation";
+import { formatOpportunityHistory, historyTimelinePlaceholder, parseOpportunityHistory } from "./utils/opportunityHistory";
+import { GRID_PAGE_SIZE, OPPORTUNITY_TABLE_PAGE_SIZE, paginateList } from "./utils/pagination";
+import {
+  normalizeDashboardSummary,
+  normalizeTodayActions,
+  todayActionKey,
+  todayActionOutcome,
+  todayActionReason,
+  todayActionSourceDetail,
+  todayActionSourceLabel,
+} from "./utils/todayActions";
 import type {
   AnswerCard,
   AnswerCategory,
-  ComposerStep,
   InterviewSession,
   ModuleComposer,
   ModuleComposerDraft,
@@ -115,7 +148,6 @@ import type {
   Opportunity,
   OpportunityAction,
   OpportunityEndReason,
-  OpportunityMatch,
   OpportunityPriority,
   OpportunityStatus,
   Page,
@@ -125,7 +157,6 @@ import type {
   SourceAsset,
   TimelineEvent,
   ViewMode,
-  WeeklyPlan,
   WeeklyTask,
 } from "./types";
 
@@ -188,60 +219,11 @@ const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根
 - polishedAnswer：基于原回答和合理补充，写出优化后的可背诵版本。
 - questionType：可选 BEHAVIORAL / PROJECT / TECHNICAL / MOTIVATION / PRODUCT。`;
 
-type ApiDashboardSummary = Partial<DashboardSummary> & {
-  weakQaCount?: number;
-};
-
-type ApiTodayAction = Partial<TodayAction> & {
-  targetPage?: Page;
-};
-
-type ApiModeState = {
-  status: "checking" | "online" | "offline" | "demo" | "mock";
-  dbPath?: string;
-  checkedAt?: string;
-};
-
-type ConfirmDialogState = {
-  title: string;
-  description: string;
-  confirmLabel: string;
-  eyebrow?: string;
-  confirmTone?: "danger" | "primary";
-  cancelLabel?: string;
-  contentKind?: "end-opportunity";
-  onConfirm: () => void;
-};
-
 type OpportunityVisibilityFilter = "ACTIVE" | "ENDED" | "ALL";
 type OpportunityPriorityFilter = "ALL" | OpportunityAction;
 type OpportunityTagFilter = "HIGH_PRIORITY" | "HIGH_MATCH" | "DUE_SOON";
 
-type EndOpportunityDraft = {
-  reason: OpportunityEndReason;
-  note: string;
-};
-
-type WeeklyTaskFormDraft = {
-  title: string;
-  detail: string;
-  level: WeeklyTask["level"];
-};
-
-type AnswerCategoryEditorState =
-  | {
-      mode: "create";
-      parentId: string;
-      name: string;
-    }
-  | {
-      mode: "rename";
-      categoryId: string;
-      name: string;
-    };
-
 const allAnswerCategoryId = "all";
-const activeOpportunityBoardStatuses = opportunityStatusFlow.filter((status) => status !== "ENDED");
 
 const endReasonLabel: Record<OpportunityEndReason, string> = {
   REJECTED: "被拒",
@@ -249,13 +231,6 @@ const endReasonLabel: Record<OpportunityEndReason, string> = {
   WITHDRAWN: "不再考虑",
   OTHER: "其他",
 };
-
-const endReasonOptions: Array<{ value: OpportunityEndReason; label: string }> = [
-  { value: "REJECTED", label: "被拒" },
-  { value: "CLOSED", label: "岗位关闭" },
-  { value: "WITHDRAWN", label: "不再考虑" },
-  { value: "OTHER", label: "其他" },
-];
 
 const opportunityVisibilityOptions: Array<{ value: Extract<OpportunityVisibilityFilter, "ACTIVE" | "ALL">; label: string }> = [
   { value: "ACTIVE", label: "推进中" },
@@ -280,98 +255,6 @@ const emptyEndOpportunityDraft = (): EndOpportunityDraft => ({
   note: "",
 });
 
-const emptyWeeklyTaskForm = (): WeeklyTaskFormDraft => ({
-  title: "",
-  detail: "",
-  level: "P2",
-});
-
-type AiSettings = {
-  provider: "none" | "openai" | "anthropic" | "custom";
-  model: string;
-  apiKey: string;
-  parseMode: "mock" | "assist";
-  transcriptionMode: "mock" | "assist";
-  endpoint: string;
-  notes: string;
-};
-type InterviewInputMode = "review-json" | "raw-transcript";
-
-type AppTheme = "dark" | "light";
-
-const aiSettingsStorageKey = "jobpilot.aiSettings.v1";
-const dismissedTodayStorageKey = "jobpilot.dismissedToday.v1";
-const themeStorageKey = "jobpilot.theme.v1";
-const defaultAiSettings: AiSettings = {
-  provider: "none",
-  model: "",
-  apiKey: "",
-  parseMode: "mock",
-  transcriptionMode: "mock",
-  endpoint: "",
-  notes: "",
-};
-
-const todayDateKey = () => new Date().toISOString().slice(0, 10);
-
-const todayActionKey = (action: Pick<TodayAction, "page" | "title" | "targetId"> & Partial<Pick<TodayAction, "source" | "taskId">>) =>
-  `${action.source ?? action.page}:${action.taskId ?? action.targetId ?? action.title}`;
-
-const todayActionSourceLabel = (action: TodayAction) => {
-  if (action.source === "opportunity") return "岗位";
-  if (action.source === "interview") return "面试";
-  if (action.source === "weekly") return "训练";
-  return "待办";
-};
-
-const todayActionSourceDetail = (action: TodayAction) => action.sourceLabel || todayActionSourceLabel(action);
-
-const todayActionReason = (action: TodayAction) => {
-  if (action.why) return action.why;
-  if (action.source === "opportunity") return "岗位当前阶段还有下一步动作，优先级来自状态、截止时间和岗位权重。";
-  if (action.source === "interview") return "面试复盘中仍有薄弱或待整理问题。";
-  return "本周计划中有仍未完成的行动。";
-};
-
-const todayActionOutcome = (action: TodayAction) => {
-  if (action.completionOutcome) return action.completionOutcome;
-  if (action.source === "opportunity") return "完成后会推进岗位状态，并从今日行动移除。";
-  if (action.source === "interview") return "完成后会标记复盘问题已处理；需要长期练习时请加入本周计划。";
-  return "完成后会标记本周计划任务为 done。";
-};
-
-const historyTimelinePlaceholder = "10.1 投递岗位\n10.5 一面\n10.8 跟进 HR";
-
-const isTimelineOccurredAtPrefix = (value = "") => /^(\d{1,4}[./-]\d{1,2}(?:[./-]\d{1,2})?|\d{1,2}月\d{1,2}(?:日|号)?|Next)$/i.test(value);
-
-const formatOpportunityHistory = (timeline: TimelineEvent[] = []) =>
-  timeline
-    .filter((event) => event.status === "done")
-    .map((event) => [event.occurredAt && event.occurredAt !== "历史" ? event.occurredAt : "", event.title, event.detail ? `- ${event.detail}` : ""].filter(Boolean).join(" "))
-    .join("\n");
-
-const parseOpportunityHistory = (value: string, existingTimeline: TimelineEvent[] = []) => {
-  const existingDone = existingTimeline.filter((event) => event.status === "done");
-  const doneEvents: TimelineEvent[] = value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      const match = line.match(/^(\S+)\s+(.+)$/);
-      const hasOccurredAtPrefix = Boolean(match && isTimelineOccurredAtPrefix(match[1]));
-      const body = match ? match[2].trim() : line;
-      const [title, ...detailParts] = (hasOccurredAtPrefix ? body : line).split(/\s+-\s+/);
-      return {
-        id: existingDone[index]?.id ?? `TL-HISTORY-${Date.now()}-${index}`,
-        occurredAt: hasOccurredAtPrefix ? match![1] : "",
-        title: title.trim(),
-        detail: detailParts.join(" - ").trim(),
-        status: "done" as const,
-      };
-    });
-  return [...doneEvents, ...existingTimeline.filter((event) => event.status === "next")];
-};
-
 const pageShowsTopSearch = (currentPage: Page) => currentPage === "opportunities" || currentPage === "interviews" || currentPage === "answers";
 
 const topSearchPlaceholder = (currentPage: Page) => {
@@ -393,27 +276,6 @@ const formatEndedDate = (value?: string | null) => {
   return value;
 };
 
-const formatDueDateDisplay = (value?: string | null) => {
-  const text = value?.trim();
-  if (!text) return "";
-
-  const datePart = text.split("T")[0];
-  const dateKeyMatch = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(datePart);
-  if (dateKeyMatch) {
-    return `${dateKeyMatch[1]}-${dateKeyMatch[2].padStart(2, "0")}-${dateKeyMatch[3].padStart(2, "0")}`;
-  }
-
-  const parsed = new Date(text);
-  if (!Number.isNaN(parsed.getTime())) {
-    const year = parsed.getFullYear();
-    const month = String(parsed.getMonth() + 1).padStart(2, "0");
-    const day = String(parsed.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  }
-
-  return text;
-};
-
 const isActiveOpportunityStatus = (status: OpportunityStatus) => status !== "ENDED";
 
 const completedOpportunityStatus = (status: OpportunityStatus): OpportunityStatus | null => {
@@ -433,112 +295,12 @@ const getInterviewTranscriptText = (session: InterviewSession) => {
   return fallbackFile?.content?.trim() ?? "";
 };
 
-const fetchErrorHint = (message: string) => {
-  if (/failed to fetch|networkerror|load failed/i.test(message)) {
-    return "无法连接本地 API（127.0.0.1:8787）。请确认终端里 npm run dev:local 正在运行，然后刷新页面重试。";
-  }
-  return message;
-};
-
-const failedExtractionStatuses = new Set([
-  "stored-file-missing",
-  "empty-pdf-text",
-  "empty-docx-text",
-  "ai-not-configured",
-  "ocr-unavailable",
-  "empty-ocr-text",
-  "ocr-provider-failed",
-  "transcription-unavailable",
-  "empty-transcription-text",
-  "transcription-provider-failed",
-  "transcription-provider-unsupported",
-  "ai-parser-failed",
-  "ai-parser-invalid-json",
-  "ai-review-empty",
-  "unsupported-file-type",
-  "file-extraction-failed",
-  "text-encoding-failed",
-]);
-
-const extractionStatusLabel = (status?: string) => {
-  if (!status) return "";
-  const labels: Record<string, string> = {
-    "local-text": "已读取文本文件",
-    "local-pdf-text": "已读取 PDF 内容",
-    "local-docx-text": "已读取文档内容",
-    "ai-ocr": "已识别图片文字",
-    "ai-transcription": "已完成录音转写",
-    "interview-json": "已导入复盘内容",
-    "ai-not-configured": "请先完成智能整理设置",
-    "stored-file-missing": "找不到已上传文件，请重新上传",
-    "empty-pdf-text": "PDF 里没有读到文字，请换文件或粘贴文字",
-    "empty-docx-text": "文档里没有读到文字，请检查文件内容",
-    "ocr-unavailable": "图片识别需要先开启智能整理",
-    "empty-ocr-text": "没有识别出文字，请换更清晰的截图",
-    "ocr-provider-failed": "图片识别失败，请检查设置后重试",
-    "transcription-unavailable": "录音转文字需要先开启",
-    "empty-transcription-text": "没有转写出文字，请检查录音内容",
-    "transcription-provider-failed": "录音转文字失败，请检查设置或音频格式",
-    "transcription-provider-unsupported": "当前服务商不支持录音转写，请用 OpenAI 或兼容接口",
-    "ai-review": "已整理面试复盘",
-    "ai-parser-failed": "面试复盘整理失败",
-    "ai-parser-invalid-json": "整理结果格式不对，请重试",
-    "ai-review-empty": "没有整理出有效问题",
-    "unsupported-file-type": "当前文件类型不能自动读取",
-    "file-extraction-failed": "文件提取失败，请换文件或粘贴文字",
-    "text-encoding-failed": "文本编码无法识别，请用 UTF-8 重新导出或直接粘贴文字",
-  };
-  return labels[status] ?? status;
-};
-
-const isAiProviderConfigured = (settings: AiSettings) => settings.provider !== "none" && Boolean(settings.apiKey.trim());
-
 const shouldSendAiSettings = (settings: AiSettings, sourceKind: ModuleComposerSource["sourceKind"], useAssist: boolean) => {
   if (!isAiProviderConfigured(settings)) return false;
   if (useAssist) return true;
   if (sourceKind === "screenshot") return settings.parseMode === "assist";
   if (sourceKind === "audio") return settings.transcriptionMode === "assist";
   return false;
-};
-
-const composerAssistRequirement = (composer: ModuleComposer, sourceKind: ModuleComposerSource["sourceKind"], settings: AiSettings) => {
-  if (composer === "interview" && sourceKind === "audio" && settings.transcriptionMode !== "assist") {
-    return "录音需要先在设置里开启「录音转文字」";
-  }
-  if (sourceKind === "screenshot" && settings.parseMode !== "assist") {
-    return "截图识别需要先在设置里开启「智能整理」";
-  }
-  if ((sourceKind === "screenshot" || (composer === "interview" && sourceKind === "audio")) && !isAiProviderConfigured(settings)) {
-    return "请先在设置里完成智能整理配置";
-  }
-  if (composer === "interview" && sourceKind === "audio" && settings.provider === "anthropic") {
-    return "录音转写目前不支持 Anthropic，请改用 OpenAI 或自定义 OpenAI 兼容接口";
-  }
-  if (sourceKind === "screenshot" && settings.provider === "custom" && /api\.example\.com/i.test(settings.endpoint)) {
-    return "服务地址还是示例地址，请换成真实地址";
-  }
-  if (sourceKind === "screenshot" && settings.provider === "custom" && settings.endpoint.includes("deepseek.com")) {
-    return "当前服务不能直接识别截图，请改用支持图片识别的服务，或直接粘贴文字";
-  }
-  return "";
-};
-
-const uploadStatusLabel = (source: ModuleComposerSource) => {
-  if (source.rawText.trim()) return "已读取文字，可以继续";
-  if (source.uploadStatus === "reading") return "正在读取文本文件...";
-  if (source.uploadStatus === "uploading") return "正在保存文件...";
-  if (source.uploadStatus === "stored") return "文件已准备好";
-  if (source.uploadStatus === "failed") return "文件保存失败，请重新选择或粘贴文字";
-  if (source.uploadStatus === "local-only") return "文件已选择；如无法读取，请直接粘贴文字";
-  if (source.fileName) return "文件已选择";
-  return "未选择文件";
-};
-
-const canRunSourceParse = (source: ModuleComposerSource) => {
-  if (source.rawText.trim()) return true;
-  if (!source.fileName.trim()) return false;
-  if (source.uploadStatus === "reading" || source.uploadStatus === "uploading") return false;
-  return Boolean(isApiEnabled && source.storageUri);
 };
 
 const timelineWithSyncedNextEvent = (
@@ -589,290 +351,14 @@ const normalizeParsedQaPairs = (items: unknown): Array<Omit<QaPair, "id">> => {
     .filter((item): item is Omit<QaPair, "id"> => Boolean(item));
 };
 
-const loadDismissedTodayIds = () => {
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(dismissedTodayStorageKey) ?? "{}") as { date?: string; ids?: string[] };
-    return saved.date === todayDateKey() && Array.isArray(saved.ids) ? new Set(saved.ids) : new Set<string>();
-  } catch {
-    return new Set<string>();
-  }
-};
-
-const loadAiSettings = (): AiSettings => {
-  try {
-    const saved = window.localStorage.getItem(aiSettingsStorageKey);
-    return saved ? { ...defaultAiSettings, ...JSON.parse(saved) } : defaultAiSettings;
-  } catch {
-    return defaultAiSettings;
-  }
-};
-
-const loadThemePreference = (): AppTheme => {
-  try {
-    const saved = window.localStorage.getItem(themeStorageKey);
-    return saved === "dark" || saved === "light" ? saved : "light";
-  } catch {
-    return "light";
-  }
-};
-
-const numberWithFallback = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
-
-const normalizeDashboardSummary = (summary: ApiDashboardSummary | null, fallback: DashboardSummary): DashboardSummary => ({
-  submittedApplications: numberWithFallback(summary?.submittedApplications, fallback.submittedApplications),
-  urgentCount: numberWithFallback(summary?.urgentCount, fallback.urgentCount),
-  pendingReviewCount: numberWithFallback(summary?.pendingReviewCount ?? summary?.weakQaCount, fallback.pendingReviewCount),
-  toApplyCount: numberWithFallback(summary?.toApplyCount, fallback.toApplyCount),
-  inProgressCount: numberWithFallback(summary?.inProgressCount, fallback.inProgressCount),
-  p0Count: numberWithFallback(summary?.p0Count, fallback.p0Count),
-  p1Count: numberWithFallback(summary?.p1Count, fallback.p1Count),
-  weakInterviewCount: numberWithFallback(summary?.weakInterviewCount, fallback.weakInterviewCount),
-  applicationGap: numberWithFallback(summary?.applicationGap, fallback.applicationGap),
-});
-
-const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback: TodayAction[]): TodayAction[] => {
-  if (!actions?.length) return fallback;
-  const validPages = new Set<Page>([...navItems.map((item) => item.id), "opportunityDetail"]);
-  const normalizedActions = actions.reduce<TodayAction[]>((items, action) => {
-    const page = action.page ?? action.targetPage;
-    if (!page || !validPages.has(page) || !action.title) return items;
-    items.push({
-      level: action.level ?? "P2",
-      title: action.title,
-      detail: action.detail ?? "",
-      page,
-      filter: action.filter ?? "",
-      source: action.source ?? (page === "opportunityDetail" ? "opportunity" : page === "interviews" ? "interview" : "weekly"),
-      sourceLabel: action.sourceLabel,
-      why: action.why,
-      completionOutcome: action.completionOutcome,
-      targetId: action.targetId,
-      taskId: action.taskId,
-    });
-    return items;
-  }, []);
-  return normalizedActions.length ? normalizedActions : fallback;
-};
-
-const GRID_PAGE_SIZE = 6;
-const WEEKLY_PRACTICE_FIRST_PAGE_TASKS = 5;
-const OPPORTUNITY_TABLE_PAGE_SIZE = 6;
-const OPPORTUNITY_BOARD_COLUMN_PAGE_SIZE = 3;
-
-const listPageCount = (length: number, pageSize: number) => Math.max(1, Math.ceil(length / pageSize));
-
-const clampListPage = (page: number, pageCount: number) => Math.min(Math.max(page, 0), Math.max(pageCount - 1, 0));
-
-const paginateList = <T,>(items: T[], page: number, pageSize: number) => {
-  const pageCount = listPageCount(items.length, pageSize);
-  const safePage = clampListPage(page, pageCount);
-  return {
-    pageCount,
-    safePage,
-    visible: items.slice(safePage * pageSize, safePage * pageSize + pageSize),
-  };
-};
-
-const paginateWeeklyGroupTasks = (tasks: WeeklyTask[], page: number, groupId: string) => {
-  if (groupId === "practice") {
-    const needsSecondPage = tasks.length > WEEKLY_PRACTICE_FIRST_PAGE_TASKS;
-    const pageCount = needsSecondPage
-      ? 1 + Math.ceil((tasks.length - WEEKLY_PRACTICE_FIRST_PAGE_TASKS) / GRID_PAGE_SIZE)
-      : 1;
-    const safePage = clampListPage(page, pageCount);
-    if (safePage === 0) {
-      return {
-        pageCount,
-        safePage,
-        visible: tasks.slice(0, WEEKLY_PRACTICE_FIRST_PAGE_TASKS),
-      };
-    }
-    const start = WEEKLY_PRACTICE_FIRST_PAGE_TASKS + (safePage - 1) * GRID_PAGE_SIZE;
-    return {
-      pageCount,
-      safePage,
-      visible: tasks.slice(start, start + GRID_PAGE_SIZE),
-    };
-  }
-  return paginateList(tasks, page, GRID_PAGE_SIZE);
-};
-
-const isOpenWeeklyTask = (task: WeeklyTask) => task.status === "open";
-
-const openNativeDatePicker = (input: HTMLInputElement | null) => {
-  if (!input) return;
-  input.focus();
-  try {
-    input.showPicker?.();
-  } catch {
-    // showPicker requires a direct user gesture in some browsers; focus keeps the field usable.
-  }
-};
-
-function DatePickerInput({
-  id,
-  value,
-  onChange,
-  label,
-}: {
-  id: string;
-  value: string;
-  onChange: (value: string) => void;
-  label: string;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const displayValue = formatDueDateDisplay(value);
-
-  return (
-    <div className="date-picker-control">
-      <input
-        id={id}
-        type="text"
-        readOnly
-        value={displayValue}
-        placeholder="选择日期"
-        aria-label={label}
-        onClick={() => openNativeDatePicker(inputRef.current)}
-      />
-      <input
-        ref={inputRef}
-        className="date-picker-native"
-        type="date"
-        value={value}
-        tabIndex={-1}
-        aria-hidden="true"
-        onChange={(event) => onChange(event.target.value)}
-      />
-      <button
-        type="button"
-        className="date-picker-button"
-        aria-label={`打开${label}选择器`}
-        onClick={() => openNativeDatePicker(inputRef.current)}
-      >
-        <CalendarClock size={16} />
-      </button>
-    </div>
-  );
-}
-
-function OpportunityCombobox({
-  opportunities,
-  value,
-  onChange,
-  emptyLabel,
-  searchPlaceholder = "搜索公司、岗位或城市",
-}: {
-  opportunities: Opportunity[];
-  value: string;
-  onChange: (value: string) => void;
-  emptyLabel: string;
-  searchPlaceholder?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const listboxId = useMemo(() => `opportunity-combobox-listbox-${makeId("CB")}`, []);
-  const selectedOpportunity = opportunities.find((opportunity) => opportunity.id === value);
-  const filteredOpportunities = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return opportunities;
-    return opportunities.filter((opportunity) => {
-      if (opportunity.id === value) return true;
-      return `${opportunity.company} ${opportunity.title} ${opportunity.city}`.toLowerCase().includes(keyword);
-    });
-  }, [opportunities, search, value]);
-
-  const chooseOpportunity = (nextValue: string) => {
-    onChange(nextValue);
-    setOpen(false);
-    setSearch("");
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    const closeFromOutside = (event: Event) => {
-      const target = event.target;
-      if (target instanceof Node && rootRef.current && !rootRef.current.contains(target)) {
-        setOpen(false);
-        setSearch("");
-      }
-    };
-    document.addEventListener("mousedown", closeFromOutside);
-    return () => document.removeEventListener("mousedown", closeFromOutside);
-  }, [open]);
-
-  return (
-    <div className="opportunity-combobox" ref={rootRef}>
-      <button
-        type="button"
-        className="opportunity-combobox-trigger"
-        onClick={() => setOpen((visible) => !visible)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            setOpen(false);
-            setSearch("");
-          }
-        }}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-controls={open ? listboxId : undefined}
-        aria-label={selectedOpportunity ? `当前关联岗位：${selectedOpportunity.company} / ${selectedOpportunity.title}` : emptyLabel}
-      >
-        <span>{selectedOpportunity ? `${selectedOpportunity.company} / ${selectedOpportunity.title}` : emptyLabel}</span>
-        <ChevronDown size={16} />
-      </button>
-      {open ? (
-        <div className="opportunity-combobox-menu" id={listboxId} role="listbox" aria-label="选择关联岗位">
-          <input
-            autoFocus
-            value={search}
-            aria-label="搜索关联岗位"
-            onChange={(event) => setSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setOpen(false);
-                setSearch("");
-              }
-            }}
-            placeholder={searchPlaceholder}
-          />
-          <button
-            type="button"
-            role="option"
-            aria-selected={!value}
-            className={!value ? "selected-option" : ""}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => chooseOpportunity("")}
-          >
-            {emptyLabel}
-          </button>
-          {filteredOpportunities.map((opportunity) => (
-            <button
-              type="button"
-              role="option"
-              aria-selected={opportunity.id === value}
-              className={opportunity.id === value ? "selected-option" : ""}
-              key={opportunity.id}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => chooseOpportunity(opportunity.id)}
-            >
-              <strong>{opportunity.company} / {opportunity.title}</strong>
-              <span>{opportunity.city} · {statusLabel[opportunity.status]}</span>
-            </button>
-          ))}
-          {filteredOpportunities.length === 0 ? <p>没有匹配的岗位</p> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function App() {
   const [page, setPage] = useState<Page>("home");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
-  const [theme, setTheme] = useState<AppTheme>(() => loadThemePreference());
+  const { theme, toggleTheme } = useThemePreference();
   const [libraryNavOpen, setLibraryNavOpen] = useState(true);
+  const [todayActionView, setTodayActionView] = useState<"priority" | "source">("priority");
   const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
+  const [expandedTodaySources, setExpandedTodaySources] = useState<Partial<Record<TodayAction["source"], boolean>>>({});
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
   const [opportunityHistoryDrafts, setOpportunityHistoryDrafts] = useState<Record<string, string>>({});
@@ -884,20 +370,12 @@ function App() {
   const [answerPage, setAnswerPage] = useState(0);
   const [opportunityPage, setOpportunityPage] = useState(0);
   const [resumeLinkedOpportunityPage, setResumeLinkedOpportunityPage] = useState(0);
-  const [weeklyInterviewPage, setWeeklyInterviewPage] = useState(0);
-  const [weeklyPracticePage, setWeeklyPracticePage] = useState(0);
-  const [interviewView, setInterviewView] = useState<"list" | "session" | "question">("list");
+  const [interviewView, setInterviewView] = useState<InterviewView>("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
-  const [randomPracticeAnswerId, setRandomPracticeAnswerId] = useState("");
-  const [randomPracticeSpinning, setRandomPracticeSpinning] = useState(false);
-  const [randomPracticeReveal, setRandomPracticeReveal] = useState(false);
   const [opportunityVisibility, setOpportunityVisibility] = useState<OpportunityVisibilityFilter>("ACTIVE");
   const [opportunityPriorityFilter, setOpportunityPriorityFilter] = useState<OpportunityPriorityFilter>("ALL");
   const [opportunityTagFilters, setOpportunityTagFilters] = useState<OpportunityTagFilter[]>([]);
   const [systemMessage, setSystemMessage] = useState("准备好了");
-  const [apiMode, setApiMode] = useState<ApiModeState>(() =>
-    isPublicDemo ? { status: "demo" } : isApiEnabled ? { status: "checking" } : { status: "mock" },
-  );
   const [answerCards, setAnswerCards] = useState<AnswerCard[]>(baseAnswerCards);
   const [answerCategories, setAnswerCategories] = useState<AnswerCategory[]>(baseAnswerCategories);
   const [selectedAnswerCategoryId, setSelectedAnswerCategoryId] = useState(allAnswerCategoryId);
@@ -912,58 +390,47 @@ function App() {
   const [selectedAnswerId, setSelectedAnswerId] = useState(baseAnswerCards[0].id);
   const [resumeList, setResumeList] = useState<ResumeVersion[]>(resumeVersions);
   const [selectedResumeId, setSelectedResumeId] = useState(resumeVersions[0].id);
-  const [weeklyPlan, setWeeklyPlan] = useState<WeeklyPlan>(baseWeeklyPlan);
-  const [weeklyTargetDraft, setWeeklyTargetDraft] = useState(String(Math.max(0, baseWeeklyPlan.targetApplications)));
-  const [apiDashboardSummary, setApiDashboardSummary] = useState<ApiDashboardSummary | null>(null);
-  const [apiTodayActions, setApiTodayActions] = useState<ApiTodayAction[] | null>(null);
   const [previewAsset, setPreviewAsset] = useState<SourceAsset | null>(null);
   const [previewSessionFile, setPreviewSessionFile] = useState<SessionFile | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [endOpportunityDraft, setEndOpportunityDraft] = useState<EndOpportunityDraft>(() => emptyEndOpportunityDraft());
-  const [weeklyTaskForm, setWeeklyTaskForm] = useState<WeeklyTaskFormDraft | null>(null);
-  const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
-  const [dismissedTodayIds, setDismissedTodayIds] = useState<Set<string>>(() => loadDismissedTodayIds());
-  const [composer, setComposer] = useState<ModuleComposer | null>(null);
-  const [composerStep, setComposerStep] = useState<ComposerStep>("source");
-  const [composerSource, setComposerSource] = useState<ModuleComposerSource>(() => createModuleComposerSource());
-  const [composerParsedQaPairs, setComposerParsedQaPairs] = useState<Array<Omit<QaPair, "id">>>([]);
-  const [interviewInputMode, setInterviewInputMode] = useState<InterviewInputMode>("review-json");
-  const [composerParseNotice, setComposerParseNotice] = useState("");
-  const [composerParsing, setComposerParsing] = useState(false);
   const [interviewReparseBusy, setInterviewReparseBusy] = useState(false);
   const [interviewReparseNotice, setInterviewReparseNotice] = useState("");
-  const [composerDraft, setComposerDraft] = useState<ModuleComposerDraft>(() =>
-    createModuleComposerDraft(resumeVersions[0]?.id ?? "", seedOpportunities[0]?.id ?? ""),
-  );
   const apiOpportunityIdsRef = useRef(new Set(seedOpportunities.map((item) => item.id)));
   const endOpportunityDraftRef = useRef<EndOpportunityDraft>(emptyEndOpportunityDraft());
   const modalBackdropPointerStartedRef = useRef(false);
-
-  const markApiOnline = (health?: ApiHealth) => {
-    setApiMode({ status: "online", dbPath: health?.dbPath, checkedAt: new Date().toLocaleTimeString() });
-  };
-
-  const refreshApiHealth = () => {
-    if (!isApiEnabled) {
-      setApiMode(isPublicDemo ? { status: "demo" } : { status: "mock" });
-      return;
-    }
-    setApiMode((state) => ({ ...state, status: "checking" }));
-    void getApiHealthApi()
-      .then((health) => {
-        if (health.ok) {
-          markApiOnline(health);
-          setSystemMessage("已连接");
-        } else {
-          setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
-          setSystemMessage("连接异常");
-        }
-      })
-      .catch(() => {
-        setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
-        setSystemMessage("暂时离线");
-      });
-  };
+  const { aiSettings, updateAiSettings, resetAiSettings } = useAiSettings();
+  const { apiMode, markApiOnline, markApiOffline, refreshApiHealth, useFallbackApiMode } = useApiModeController({ onMessage: setSystemMessage });
+  const { apiDashboardSummary, apiTodayActions, replaceApiInsights, refreshApiInsights, invalidateApiInsights, invalidateTodayActions } = useApiInsights();
+  const { dismissTodayAction, isTodayActionDismissed } = useDismissedTodayActions();
+  const {
+    composer,
+    composerStep,
+    composerSource,
+    composerParsedQaPairs,
+    interviewInputMode,
+    composerParseNotice,
+    composerParsing,
+    composerDraft,
+    closeComposer,
+    openComposer: openComposerDialog,
+    updateComposerSource,
+    patchComposerSource,
+    updateComposerDraft,
+    handleComposerFileSelected,
+    resetComposerDraft,
+    setComposerStep,
+    setComposerSource,
+    setComposerParsedQaPairs,
+    setInterviewInputMode,
+    setComposerParseNotice,
+    setComposerParsing,
+    setComposerDraft,
+  } = useModuleComposerController({
+    initialResumeId: resumeVersions[0]?.id ?? "",
+    initialOpportunityId: seedOpportunities[0]?.id ?? "",
+    onMessage: setSystemMessage,
+  });
 
   const applyLoadedData = (data: InitialApiData | JobPilotBackup) => {
     const firstActiveOpportunity = data.opportunities.find((item) => item.status !== "ENDED") ?? data.opportunities[0];
@@ -981,16 +448,15 @@ function App() {
     setSelectedAnswerId(data.answerCards[0]?.id ?? "");
     setResumeList(data.resumeVersions);
     setSelectedResumeId(data.resumeVersions[0]?.id ?? "");
-    setWeeklyPlan(data.weeklyPlan);
-    setApiDashboardSummary("dashboardSummary" in data ? data.dashboardSummary : null);
-    setApiTodayActions("todayActions" in data ? data.todayActions : null);
-    setComposerDraft(createModuleComposerDraft(data.resumeVersions[0]?.id ?? "", data.opportunities[0]?.id ?? ""));
+    replaceWeeklyPlan(data.weeklyPlan);
+    replaceApiInsights("dashboardSummary" in data ? data.dashboardSummary : null, "todayActions" in data ? data.todayActions : null);
+    resetComposerDraft(data.resumeVersions[0]?.id ?? "", data.opportunities[0]?.id ?? "");
   };
 
   useEffect(() => {
     if (!isApiEnabled) {
       setSystemMessage(isPublicDemo ? "演示模式" : "使用本机数据");
-      setApiMode(isPublicDemo ? { status: "demo" } : { status: "mock" });
+      useFallbackApiMode();
       return;
     }
 
@@ -1004,7 +470,7 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) {
-          setApiMode({ status: "offline", checkedAt: new Date().toLocaleTimeString() });
+          markApiOffline();
           setSystemMessage("使用本机数据");
         }
       });
@@ -1014,45 +480,39 @@ function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(aiSettingsStorageKey, JSON.stringify(aiSettings));
-  }, [aiSettings]);
-
-  useEffect(() => {
-    window.localStorage.setItem(dismissedTodayStorageKey, JSON.stringify({ date: todayDateKey(), ids: [...dismissedTodayIds] }));
-  }, [dismissedTodayIds]);
-
-  useEffect(() => {
-    window.localStorage.setItem(themeStorageKey, theme);
-  }, [theme]);
-
-  useEffect(() => {
     setInterviewReparseNotice("");
   }, [selectedInterviewId]);
 
-  const refreshApiInsights = () => {
-    if (!isApiEnabled) return;
-    void Promise.all([getDashboardSummaryApi(), getTodayActionsApi()])
-      .then(([summary, actions]) => {
-        setApiDashboardSummary(summary);
-        setApiTodayActions(actions);
-      })
-      .catch(() => {
-        setApiDashboardSummary(null);
-        setApiTodayActions(null);
-      });
-  };
-
-  const invalidateApiInsights = () => {
-    setApiDashboardSummary(null);
-    setApiTodayActions(null);
-  };
-
-  const refreshApiWeeklyPlan = () => {
-    if (!isApiEnabled) return;
-    void getWeeklyPlanApi()
-      .then(setWeeklyPlan)
-      .catch(() => setSystemMessage("本周计划已保存在本机"));
-  };
+  const {
+    weeklyPlan,
+    weeklyTargetDraft,
+    weeklyTargetApplications,
+    hasWeeklyTarget,
+    weeklyTaskGroups,
+    visibleTrainingTaskCount,
+    weeklyInterviewPage,
+    weeklyPracticePage,
+    weeklyTaskForm,
+    replaceWeeklyPlan,
+    setWeeklyInterviewPage,
+    setWeeklyPracticePage,
+    openWeeklyTaskDialog,
+    updateWeeklyTaskForm,
+    closeWeeklyTaskDialog,
+    submitWeeklyTaskForm,
+    updateWeeklyTask,
+    deleteWeeklyTask,
+    addWeeklyFocus,
+    createWeeklyTask,
+    removeWeeklyTasksByEntity,
+    updateWeeklyTargetDraft,
+    restoreWeeklyTargetDraft,
+  } = useWeeklyPlanController({
+    initialPlan: baseWeeklyPlan,
+    onInsightsRefresh: refreshApiInsights,
+    onInsightsInvalidate: invalidateApiInsights,
+    onMessage: setSystemMessage,
+  });
 
   const selectedOpportunity = opportunities.find((item) => item.id === selectedOpportunityId) ?? opportunities.find((item) => item.status !== "ENDED") ?? opportunities[0];
   const selectedInterview = interviewSessions.find((item) => item.id === selectedInterviewId) ?? interviewSessions[0];
@@ -1075,15 +535,40 @@ function App() {
   const getResumeName = (resumeId: string) => selectResumeName(resumeList, resumeId);
   const localTodayActions = selectTodayActions(opportunities, interviewSessions, answerCards, weeklyPlan, resumeList);
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
-  const todayActions = hydratedTodayActions.filter((action) => !dismissedTodayIds.has(todayActionKey(action)));
-  const hasWeeklyTarget = weeklyPlan.targetApplications > 0;
-  const weeklyTargetApplications = Math.max(0, weeklyPlan.targetApplications);
+  const todayActions = hydratedTodayActions.filter((action) => !isTodayActionDismissed(action));
   const weeklyProgressPercent = hasWeeklyTarget ? Math.min(100, (submittedApplications / weeklyTargetApplications) * 100) : 0;
-  useEffect(() => {
-    setWeeklyTargetDraft(String(weeklyTargetApplications));
-  }, [weeklyTargetApplications]);
   const topTodayActions = todayActions.slice(0, 3);
   const moreTodayActions = todayActions.slice(3);
+  const todaySourcePreviewLimit = 3;
+  const todayActionSourceGroups: Array<{
+    source: TodayAction["source"];
+    label: string;
+    detail: string;
+    icon: typeof BriefcaseBusiness;
+    actions: TodayAction[];
+  }> = [
+    {
+      source: "opportunity",
+      label: "岗位推进",
+      detail: "待投递、笔试、面试等岗位推进任务",
+      icon: BriefcaseBusiness,
+      actions: todayActions.filter((action) => action.source === "opportunity"),
+    },
+    {
+      source: "interview",
+      label: "面试复盘",
+      detail: "需要整理和补强的面试复盘",
+      icon: FileAudio,
+      actions: todayActions.filter((action) => action.source === "interview"),
+    },
+    {
+      source: "weekly",
+      label: "训练计划",
+      detail: "本周计划里的自定义任务和答案卡练习",
+      icon: CalendarClock,
+      actions: todayActions.filter((action) => action.source === "weekly"),
+    },
+  ];
   const normalizedQuery = query.trim().toLowerCase();
   const sortAnswerCategories = (left: AnswerCategory, right: AnswerCategory) =>
     left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, "zh-Hans-CN") || left.id.localeCompare(right.id);
@@ -1160,7 +645,10 @@ function App() {
       }),
     [answerCards, normalizedQuery, isAllAnswerCategorySelected, selectedAnswerCategoryIds, answerCategoryById],
   );
-  const randomPracticeCard = filteredAnswerCards.find((card) => card.id === randomPracticeAnswerId);
+  const { randomPracticeCard, randomPracticeSpinning, randomPracticeReveal, startRandomAnswerPractice, toggleRandomPracticeReveal } = useAnswerPracticeController({
+    answerCards: filteredAnswerCards,
+    onMessage: setSystemMessage,
+  });
   const answerList = paginateList(filteredAnswerCards, answerPage, GRID_PAGE_SIZE);
   const visibleAnswerCards = answerList.visible;
   const answerPageCount = answerList.pageCount;
@@ -1170,29 +658,6 @@ function App() {
       setSelectedAnswerCategoryId(uncategorizedAnswerCategoryId);
     }
   }, [answerCategoryById, selectedAnswerCategoryId]);
-  const openWeeklyTasks = useMemo(() => weeklyPlan.tasks.filter(isOpenWeeklyTask), [weeklyPlan.tasks]);
-  const weeklyTaskGroups = useMemo(
-    () =>
-      [
-        {
-          id: "interview",
-          title: "面试表达练习",
-          detail: "从面试复盘或答案卡中选择想练的问题，添加到这里。",
-          examples: ["重讲一个薄弱项目题", "把答案卡练到能自然复述"],
-          tasks: openWeeklyTasks.filter((task) => task.source === "interview" || task.source === "answer"),
-        },
-        {
-          id: "practice",
-          title: "自主训练",
-          detail: "手动添加笔试、作品集、英语和材料整理等其他任务。",
-          examples: ["练一道笔试题", "整理一版项目表达"],
-          tasks: openWeeklyTasks.filter((task) => task.source === "manual" || task.source === "weekly-focus"),
-        },
-      ],
-    [openWeeklyTasks],
-  );
-  const visibleTrainingTaskCount = weeklyTaskGroups.reduce((count, group) => count + group.tasks.length, 0);
-
   const selectOpportunityPriorityFilter = (nextFilter: OpportunityPriorityFilter) => {
     setOpportunityPriorityFilter(nextFilter);
     setOpportunityPage(0);
@@ -1285,103 +750,7 @@ function App() {
     setSystemMessage(`已打开${label}`);
   };
 
-  const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") => {
-    setComposer(kind);
-    setComposerStep(kind === "answer" ? "review" : "source");
-    setInterviewInputMode("review-json");
-    setComposerSource(createModuleComposerSource(kind === "resume" ? "resume-file" : kind === "interview" ? "transcript" : kind === "opportunity" ? "jd-text" : "manual"));
-    setComposerParsedQaPairs([]);
-    setComposerParseNotice("");
-    setComposerParsing(false);
-    setComposerDraft(createModuleComposerDraft(resumeList[0]?.id ?? "", linkedOpportunityId));
-    setSystemMessage(
-      kind === "opportunity"
-        ? "开始新增岗位"
-        : kind === "interview"
-          ? "开始新增面试复盘"
-          : kind === "resume"
-            ? "开始上传简历"
-            : "开始新增答案卡",
-    );
-  };
-
-  const updateAiSettings = (patch: Partial<AiSettings>) => {
-    setAiSettings((settings) => ({ ...settings, ...patch }));
-  };
-
-  const updateComposerSource = (field: keyof ModuleComposerSource, value: string) => {
-    setComposerSource((source) => ({ ...source, [field]: value } as ModuleComposerSource));
-  };
-
-  const updateComposerDraft = <Field extends keyof ModuleComposerDraft>(field: Field, value: ModuleComposerDraft[Field]) => {
-    setComposerDraft((draft) => ({ ...draft, [field]: value } as ModuleComposerDraft));
-  };
-
-  const handleComposerFileSelected = (fileList: FileList | null) => {
-    if (!composer) return;
-    const file = fileList?.[0];
-    if (!file) return;
-    const sourceKind = inferComposerSourceKind(file.name, composer);
-    setComposerSource((source) => ({
-      ...source,
-      fileName: file.name,
-      sourceKind,
-      rawText: "",
-      storageUri: undefined,
-      extractionStatus: undefined,
-      uploadStatus: isApiEnabled ? "uploading" : "local-only",
-      fileSize: `${Math.max(1, Math.round(file.size / 1024))} KB`,
-    }));
-    setComposerParseNotice("");
-    setSystemMessage("已选择材料");
-
-    if (/\.(txt|md|json)$/i.test(file.name)) {
-      setSystemMessage("正在读取文件");
-      setComposerSource((source) => ({ ...source, uploadStatus: "reading" }));
-      void readTextFile(file)
-        .then((decoded) => {
-          if (decoded.garbled) {
-            setComposerSource((source) => ({
-              ...source,
-              rawText: "",
-              extractionStatus: "text-encoding-failed",
-              uploadStatus: "failed",
-            }));
-            setComposerParseNotice("文本文件编码无法识别，看起来像乱码。请用 UTF-8 重新导出转写稿，或直接粘贴文字内容。");
-            setSystemMessage("文本编码无法识别");
-            return;
-          }
-          setComposerSource((source) => ({
-            ...source,
-            rawText: decoded.text,
-            extractionStatus: "local-text",
-            uploadStatus: isApiEnabled ? source.uploadStatus : "stored",
-          }));
-          setSystemMessage("文件已读取");
-        })
-        .catch(() => {
-          setComposerSource((source) => ({ ...source, uploadStatus: "failed" }));
-          setSystemMessage("文件读取失败");
-        });
-    }
-
-    if (isApiEnabled) {
-      void uploadFileApi(file)
-        .then((storedFile) => {
-          setComposerSource((source) => ({
-            ...source,
-            storageUri: storedFile.storageUri,
-            fileSize: storedFile.fileSize,
-            uploadStatus: "stored",
-          }));
-          setSystemMessage("文件已保存");
-        })
-        .catch(() => {
-          setComposerSource((source) => ({ ...source, uploadStatus: "local-only" }));
-          setSystemMessage("文件已选择");
-        });
-    }
-  };
+  const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") => openComposerDialog(kind, resumeList[0]?.id ?? "", linkedOpportunityId);
 
   const runComposerParse = async () => {
     if (!composer || composerParsing) return;
@@ -1662,7 +1031,7 @@ function App() {
         setSystemMessage("内容已整理");
         return;
       } catch (error) {
-        const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
+        const errorDetail = formatComposerApiError(error instanceof Error ? error.message : String(error || ""));
         if (composer === "interview" && sendAiSettings) {
           blockParseWithNotice(
             "ai-parser-failed",
@@ -1720,7 +1089,7 @@ function App() {
     setAnswerView("detail");
   };
 
-  const updateSelectedQa = (field: keyof Pick<QaPair, "question" | "originalAnswer" | "critique" | "framework" | "optimizedAnswer">, value: string) => {
+  const updateSelectedQa = (field: QaUpdateField, value: string) => {
     const patch = { [field]: value } as Partial<QaPair>;
     setInterviewSessions((sessions) =>
       sessions.map((session) =>
@@ -1865,7 +1234,7 @@ function App() {
       setInterviewReparseNotice(`已重新整理 ${nextPairs.length} 个问题。`);
       setSystemMessage("面试已重新整理");
     } catch (error) {
-      const errorDetail = fetchErrorHint(error instanceof Error ? error.message : String(error || ""));
+      const errorDetail = formatComposerApiError(error instanceof Error ? error.message : String(error || ""));
       setInterviewReparseNotice(errorDetail ? `重新整理失败：${errorDetail}` : "重新整理失败，请稍后重试。");
       setSystemMessage("重新整理失败");
     } finally {
@@ -1928,8 +1297,8 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
-      else if (composer) setComposer(null);
-      else if (weeklyTaskForm) setWeeklyTaskForm(null);
+      else if (composer) closeComposer();
+      else if (weeklyTaskForm) closeWeeklyTaskDialog();
       else if (previewAsset) setPreviewAsset(null);
       else if (previewSessionFile) setPreviewSessionFile(null);
     };
@@ -2042,30 +1411,6 @@ function App() {
 
   const syncDeletedAnswerCategory = (id: string) => {
     void deleteAnswerCategoryApi(id).catch(() => setSystemMessage("分类已在本机更新"));
-  };
-
-  const syncWeeklyPlanPatch = (patch: Partial<Omit<WeeklyPlan, "tasks">>) => {
-    void updateWeeklyPlanApi(patch)
-      .then(refreshApiInsights)
-      .catch(() => setSystemMessage("本周计划已保存在本机"));
-  };
-
-  const syncCreatedWeeklyTask = (task: WeeklyTask) => {
-    void createWeeklyTaskApi(task)
-      .then(refreshApiInsights)
-      .catch(() => setSystemMessage("本周计划已保存在本机"));
-  };
-
-  const syncUpdatedWeeklyTask = (id: string, patch: Partial<WeeklyTask>) => {
-    void updateWeeklyTaskApi(id, patch)
-      .then(refreshApiInsights)
-      .catch(() => setSystemMessage("本周计划已保存在本机"));
-  };
-
-  const syncDeletedWeeklyTask = (id: string) => {
-    void deleteWeeklyTaskApi(id)
-      .then(refreshApiInsights)
-      .catch(() => setSystemMessage("本周计划已保存在本机"));
   };
 
   const syncCreatedResumeVersion = (resume: ResumeVersion) => {
@@ -2197,10 +1542,9 @@ function App() {
     setInterviewSessions(remaining);
     setSelectedInterviewId(remaining[0].id);
     setSelectedQaId(remaining[0].qaPairs[0]?.id ?? "");
-    setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => !(task.source === "interview" && task.relatedEntityId === interviewId)) }));
+    removeWeeklyTasksByEntity("interview", interviewId);
     setInterviewPage(0);
     setInterviewView("list");
-    invalidateApiInsights();
     syncDeletedInterviewSession(interviewId);
     setSystemMessage("面试已删除");
   };
@@ -2315,7 +1659,7 @@ function App() {
     });
   };
 
-  const updateSelectedAnswer = (field: keyof Pick<AnswerCard, "question" | "type" | "framework" | "answer" | "relatedRoles" | "practiceStatus" | "status" | "categoryId">, value: string) => {
+  const updateSelectedAnswer = (field: AnswerUpdateField, value: string) => {
     const patch = { [field]: value } as Partial<AnswerCard>;
     setAnswerCards((cards) => cards.map((card) => (card.id === selectedAnswer.id ? { ...card, [field]: value } : card)));
     if (field === "status" || field === "practiceStatus") invalidateApiInsights();
@@ -2338,8 +1682,7 @@ function App() {
     setAnswerCards(remaining);
     setSelectedAnswerId(remaining[0].id);
     setAnswerView("list");
-    setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => !(task.source === "answer" && task.relatedEntityId === answerId)) }));
-    invalidateApiInsights();
+    removeWeeklyTasksByEntity("answer", answerId);
     syncDeletedAnswerCard(answerId);
     setSystemMessage("答案卡已删除");
   };
@@ -2389,8 +1732,7 @@ function App() {
           : resume,
       ),
     );
-    setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => !(task.source === "opportunity" && task.relatedEntityId === opportunityId)) }));
-    invalidateApiInsights();
+    removeWeeklyTasksByEntity("opportunity", opportunityId);
     goTo("opportunities");
     syncDeletedOpportunity(opportunityId);
     setSystemMessage("岗位已删除");
@@ -2420,7 +1762,7 @@ function App() {
   };
 
   const buildLocalBackup = (): JobPilotBackup => ({
-      schemaVersion: "jobpilot-v0.7.2",
+      schemaVersion: BACKUP_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       source: isPublicDemo ? "public-demo" : isApiEnabled ? "local-api" : "local-mock",
       opportunities,
@@ -2450,24 +1792,16 @@ function App() {
       });
   };
 
-  const importBackupFromFile = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/json,.json";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try {
-        const backup = JSON.parse(await file.text()) as JobPilotBackup;
-        const restoredBackup = isApiEnabled ? await importBackupApi(backup) : backup;
-        applyLoadedData(restoredBackup);
-        if (isApiEnabled) refreshApiInsights();
-        setSystemMessage("备份已恢复");
-      } catch {
-        setSystemMessage("备份恢复失败");
-      }
-    };
-    input.click();
+  const importBackup = async (backup: JobPilotBackup) => {
+    try {
+      const restoredBackup = isApiEnabled ? await importBackupApi(backup) : backup;
+      applyLoadedData(restoredBackup);
+      if (isApiEnabled) refreshApiInsights();
+      setSystemMessage("备份已恢复");
+    } catch (error) {
+      setSystemMessage("备份恢复失败，已有数据未被覆盖");
+      throw error;
+    }
   };
 
   const exportAnswerCards = () => {
@@ -2545,78 +1879,6 @@ function App() {
     setSystemMessage("面试复盘已导出");
   };
 
-  const addWeeklyTask = (preset?: Partial<Pick<WeeklyTask, "title" | "detail" | "level">>) => {
-    const newTask: WeeklyTask = {
-      id: makeId("WT"),
-      title: preset?.title?.trim() || "新的练习动作",
-      detail: preset?.detail?.trim() || "写下今天准备推进的一件小事。",
-      source: "manual",
-      sourceLabel: "本周计划",
-      level: preset?.level ?? "P2",
-      status: "open",
-    };
-    setWeeklyPlan((plan) => ({ ...plan, tasks: [newTask, ...plan.tasks] }));
-    setWeeklyPracticePage(0);
-    invalidateApiInsights();
-    syncCreatedWeeklyTask(newTask);
-    setSystemMessage("动作已添加");
-  };
-
-  const openWeeklyTaskDialog = () => setWeeklyTaskForm(emptyWeeklyTaskForm());
-
-  const submitWeeklyTaskForm = () => {
-    if (!weeklyTaskForm) return;
-    const title = weeklyTaskForm.title.trim();
-    if (!title) {
-      setSystemMessage("请填写动作标题");
-      return;
-    }
-    addWeeklyTask({
-      title,
-      detail: weeklyTaskForm.detail.trim() || "例如：练一道笔试题，或整理一个项目表达。",
-      level: weeklyTaskForm.level,
-    });
-    setWeeklyTaskForm(null);
-  };
-
-  const updateWeeklyTask = (id: string, field: keyof Pick<WeeklyTask, "title" | "detail" | "status" | "level">, value: string) => {
-    const patch = { [field]: value } as Partial<WeeklyTask>;
-    setWeeklyPlan((plan) => ({
-      ...plan,
-      tasks: plan.tasks.map((task) => (task.id === id ? { ...task, [field]: value } : task)),
-    }));
-    invalidateApiInsights();
-    syncUpdatedWeeklyTask(id, patch);
-  };
-
-  const deleteWeeklyTask = (id: string) => {
-    setWeeklyPlan((plan) => ({ ...plan, tasks: plan.tasks.filter((task) => task.id !== id) }));
-    invalidateApiInsights();
-    syncDeletedWeeklyTask(id);
-    setSystemMessage("动作已删除");
-  };
-
-  const addWeeklyFocus = (field: keyof Pick<WeeklyPlan, "focusDirections" | "focusCities" | "focusCompanies" | "practiceThemes">, value: string) => {
-    if (!value.trim()) return;
-    const nextValues = [...weeklyPlan[field], value.trim()];
-    setWeeklyPlan((plan) => ({ ...plan, [field]: [...plan[field], value.trim()] }));
-    syncWeeklyPlanPatch({ [field]: nextValues });
-    setSystemMessage("训练重点已添加");
-  };
-
-  const createWeeklyTask = (task: Omit<WeeklyTask, "id" | "status">) => {
-    const newTask: WeeklyTask = {
-      id: makeId("WT"),
-      status: "open",
-      ...task,
-      level: task.level ?? "P2",
-    };
-    setWeeklyPlan((plan) => ({ ...plan, tasks: [newTask, ...plan.tasks] }));
-    invalidateApiInsights();
-    syncCreatedWeeklyTask(newTask);
-    setSystemMessage("任务已添加");
-  };
-
   const addSelectedAnswerToPractice = () => {
     const existingTask = weeklyPlan.tasks.find((task) => task.source === "answer" && task.relatedEntityId === selectedAnswer.id && task.status === "open");
     if (existingTask) {
@@ -2636,45 +1898,6 @@ function App() {
     setPage("weekly");
   };
 
-  const startRandomAnswerPractice = () => {
-    const candidates = filteredAnswerCards;
-    if (!candidates.length) {
-      setSystemMessage("没有可练习的答案卡");
-      return;
-    }
-
-    let pickedIndex = Math.floor(Math.random() * candidates.length);
-    if (candidates.length > 1 && candidates[pickedIndex]?.id === randomPracticeAnswerId) {
-      pickedIndex = (pickedIndex + 1) % candidates.length;
-    }
-
-    const picked = candidates[pickedIndex];
-    setRandomPracticeSpinning(true);
-    setRandomPracticeReveal(false);
-    window.setTimeout(() => {
-      setRandomPracticeAnswerId(picked.id);
-      setRandomPracticeSpinning(false);
-      setSystemMessage("已抽出一张临时练习卡");
-    }, 520);
-  };
-
-  const updateWeeklyTargetApplications = (targetApplications: number) => {
-    const nextTarget = Number.isFinite(targetApplications) ? Math.max(0, Math.round(targetApplications)) : 0;
-    setWeeklyPlan((plan) => ({ ...plan, targetApplications: nextTarget }));
-    invalidateApiInsights();
-    syncWeeklyPlanPatch({ targetApplications: nextTarget });
-  };
-
-  const updateWeeklyTargetDraft = (value: string) => {
-    setWeeklyTargetDraft(value);
-    if (value.trim() === "") return;
-    updateWeeklyTargetApplications(Number(value));
-  };
-
-  const restoreWeeklyTargetDraft = () => {
-    if (weeklyTargetDraft.trim() === "") setWeeklyTargetDraft(String(weeklyTargetApplications));
-  };
-
   const promoteFocusToTask = (label: string, value: string) => {
     createWeeklyTask({
       title: `推进${value}`,
@@ -2685,9 +1908,16 @@ function App() {
     });
   };
 
+  const blockInvalidComposerSubmit = (validation: ComposerValidationResult) => {
+    if (validation.ok) return true;
+    const message = composerValidationMessage(validation);
+    setComposerParseNotice(message);
+    setSystemMessage(validation.errors[0]?.message ?? "请检查表单");
+    return false;
+  };
+
   const createOpportunityDirect = () => {
-    if (!composerDraft.company.trim() || !composerDraft.title.trim() || !composerDraft.sourceText.trim()) {
-      setSystemMessage("请补齐公司、岗位和岗位描述");
+    if (!blockInvalidComposerSubmit(validateOpportunityComposerDraft(composerDraft, composerSource))) {
       return;
     }
 
@@ -2752,14 +1982,20 @@ function App() {
     setOpportunities((items) => [nextOpportunity, ...items]);
     setSelectedOpportunityId(nextOpportunity.id);
     syncCreatedOpportunity(nextOpportunity);
-    setComposer(null);
+    closeComposer();
     setPage("opportunityDetail");
     setSystemMessage("岗位已创建");
   };
 
   const createInterviewDirect = () => {
-    if (!composerDraft.company.trim() || !composerDraft.role.trim() || !composerDraft.round.trim()) {
-      setSystemMessage("请补齐公司、岗位和轮次");
+    if (
+      !blockInvalidComposerSubmit(
+        validateInterviewComposerDraft(composerDraft, composerSource, {
+          inputMode: interviewInputMode,
+          parsedQaPairCount: composerParsedQaPairs.length,
+        }),
+      )
+    ) {
       return;
     }
 
@@ -2791,12 +2027,6 @@ function App() {
         uploadedAt: now,
         content: hasUsableTranscript ? sourceText : undefined,
       });
-    }
-
-    if (interviewInputMode === "raw-transcript" && !composerParsedQaPairs.length) {
-      setSystemMessage("请先用智能整理生成复盘");
-      setComposerParseNotice("未整理的面试文稿需要先开启智能整理并生成复盘后，才能创建正式记录。");
-      return;
     }
 
     const parsedQaPairs = composerParsedQaPairs.length ? composerParsedQaPairs : hasUsableTranscript ? parseTranscriptQaPairs(sourceText) : [];
@@ -2844,15 +2074,14 @@ function App() {
     ) {
       applyOpportunityProgress(linkedOpportunity.id, "WAITING", "system", "新增" + nextSession.round + "面试复盘后自动推进");
     }
-    setComposer(null);
+    closeComposer();
     setInterviewView("session");
     setPage("interviews");
     setSystemMessage("面试复盘已创建");
   };
 
   const createResumeDirect = () => {
-    if (!composerDraft.title.trim() || !composerDraft.fileName.trim()) {
-      setSystemMessage("请补齐简历名称和文件");
+    if (!blockInvalidComposerSubmit(validateResumeComposerDraft(composerDraft, composerSource, { requireStoredFile: isApiEnabled }))) {
       return;
     }
 
@@ -2863,7 +2092,7 @@ function App() {
       fileName,
       fileType: fileName.split(".").pop()?.toUpperCase() ?? "FILE",
       fileSize: composerSource.fileSize || "待读取",
-      uploadedAt: "Now",
+      uploadedAt: todayDateKey(),
       roles: composerDraft.roles.trim() || "待填写",
       points: composerDraft.points.trim() || "待填写核心卖点",
       summary: composerDraft.summary.trim() || "待填写文件摘要",
@@ -2874,14 +2103,13 @@ function App() {
     setResumeList((items) => [nextResume, ...items]);
     setSelectedResumeId(nextResume.id);
     syncCreatedResumeVersion(nextResume);
-    setComposer(null);
+    closeComposer();
     setPage("resumes");
     setSystemMessage("简历已添加");
   };
 
   const createAnswerDirect = () => {
-    if (!composerDraft.question.trim()) {
-      setSystemMessage("请先填写问题");
+    if (!blockInvalidComposerSubmit(validateAnswerComposerDraft(composerDraft))) {
       return;
     }
 
@@ -2901,7 +2129,7 @@ function App() {
     setAnswerCards((cards) => [newCard, ...cards]);
     setSelectedAnswerId(newCard.id);
     syncCreatedAnswerCard(newCard);
-    setComposer(null);
+    closeComposer();
     setAnswerView("detail");
     setPage("answers");
     setSystemMessage("答案卡已创建");
@@ -2970,11 +2198,11 @@ function App() {
       const nextOpportunity = buildLocalOpportunity(targetOpportunity);
       setOpportunities((items) => items.map((item) => (item.id === opportunityId ? nextOpportunity : item)));
       applyProgressSideEffects(nextOpportunity);
-      setApiTodayActions(null);
+      invalidateTodayActions();
       setSystemMessage(`已更新为${statusLabel[status]}`);
     };
 
-    setApiTodayActions(null);
+    invalidateTodayActions();
     if (isApiEnabled && apiOpportunityIdsRef.current.has(opportunityId)) {
       setSystemMessage("正在更新进度");
       void progressOpportunityApi(opportunityId, {
@@ -3034,8 +2262,7 @@ function App() {
       timeline: nextTimeline,
     };
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...patch } : item)));
-    setApiTodayActions(null);
-    setApiDashboardSummary(null);
+    invalidateApiInsights();
     syncUpdatedOpportunity(selectedOpportunity.id, patch);
     setSystemMessage("岗位已标记为已结束");
   };
@@ -3097,8 +2324,7 @@ function App() {
       timeline: nextTimeline,
     };
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...patch } : item)));
-    setApiTodayActions(null);
-    setApiDashboardSummary(null);
+    invalidateApiInsights();
     syncUpdatedOpportunity(selectedOpportunity.id, patch);
     setSystemMessage("岗位已恢复推进");
   };
@@ -3144,12 +2370,19 @@ function App() {
     }
   };
 
+  const toggleTodaySource = (source: TodayAction["source"]) => {
+    setExpandedTodaySources((sources) => ({
+      ...sources,
+      [source]: !sources[source],
+    }));
+  };
+
   const completeTodayAction = (action: TodayAction) => {
     if (action.source === "weekly") {
       const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
       if (!taskId) return;
       updateWeeklyTask(taskId, "status", "done");
-      setApiTodayActions(null);
+      invalidateTodayActions();
       setSystemMessage("今日任务已完成");
       return;
     }
@@ -3161,10 +2394,10 @@ function App() {
       if (nextStatus) {
         applyOpportunityProgress(opportunity.id, nextStatus, "manual", action.title);
       } else {
-        setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
+        dismissTodayAction(action);
         setSystemMessage("今日已完成");
       }
-      setApiTodayActions(null);
+      invalidateTodayActions();
       return;
     }
 
@@ -3178,12 +2411,12 @@ function App() {
         ),
       );
       weakPairs.forEach((pair) => syncUpdatedQaPair(pair.id, { weak: false }));
-      setApiTodayActions(null);
+      invalidateTodayActions();
       setSystemMessage("复盘任务已完成");
       return;
     }
 
-    setDismissedTodayIds((ids) => new Set(ids).add(todayActionKey(action)));
+    dismissTodayAction(action);
     setSystemMessage("今日已暂不显示");
   };
 
@@ -3341,122 +2574,6 @@ function App() {
     createLocalAnswerCard();
   };
 
-  const renderAnswerCategoryEditor = (matches: boolean, depth: number) => {
-    if (!answerCategoryEditor || !matches) return null;
-    const label = answerCategoryEditor.mode === "create" ? "新增分类" : "重命名分类";
-    return (
-      <div className="answer-category-inline-editor" style={{ "--category-depth": depth } as CSSProperties}>
-        <span>{label}</span>
-        <input
-          autoFocus
-          value={answerCategoryEditor.name}
-          onChange={(event) => setAnswerCategoryEditor((editor) => (editor ? { ...editor, name: event.target.value } : editor))}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commitAnswerCategoryEditor();
-            if (event.key === "Escape") setAnswerCategoryEditor(null);
-          }}
-          placeholder="分类名称"
-        />
-        <div>
-          <button className="primary-button compact-button" onClick={commitAnswerCategoryEditor}>
-            保存
-          </button>
-          <button className="ghost-button compact-button" onClick={() => setAnswerCategoryEditor(null)}>
-            取消
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  const renderAnswerCategoryTree = (category: AnswerCategory, depth = 0) => {
-    const children = answerCategoryChildren.get(category.id) ?? [];
-    const hasChildren = children.length > 0;
-    const expanded = expandedAnswerCategoryIds.has(category.id);
-    const active = !isAllAnswerCategorySelected && selectedAnswerCategory.id === category.id;
-    const dropTarget = answerCategoryDropTargetId === category.id;
-    const FolderIcon = hasChildren && expanded ? FolderOpen : Folder;
-
-    return (
-      <div key={category.id} className="answer-category-node">
-        <div
-          className={`answer-category-row ${active ? "active" : ""} ${dropTarget ? "drop-target" : ""}`}
-          style={{ "--category-depth": depth } as CSSProperties}
-          onDragOver={(event) => handleAnswerCategoryDragOver(event, category.id)}
-          onDragLeave={(event) => handleAnswerCategoryDragLeave(event, category.id)}
-          onDrop={(event) => handleAnswerCategoryDrop(event, category.id)}
-        >
-          <button
-            className="answer-category-toggle"
-            onClick={() => hasChildren && toggleAnswerCategoryExpanded(category.id)}
-            disabled={!hasChildren}
-            aria-label={expanded ? "收起分类" : "展开分类"}
-          >
-            {hasChildren ? expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
-          </button>
-          <button
-            className="answer-category-main"
-            aria-current={active ? "true" : undefined}
-            onClick={() => {
-              setSelectedAnswerCategoryId(category.id);
-              setOpenAnswerCategoryMenuId("");
-              setAnswerPage(0);
-              setAnswerView("list");
-            }}
-            title="拖入答案卡可移动到此分类"
-          >
-            <FolderIcon size={16} />
-            <span>{category.name}</span>
-            {category.system ? <em>系统</em> : null}
-          </button>
-          {!category.system ? (
-            <div className="answer-category-actions">
-              <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor(category.id)} aria-label={`在${category.name}下新增子分类`}>
-                <Plus size={13} />
-              </button>
-              <div className="answer-category-menu-wrap">
-                <button
-                  className="answer-category-icon-action"
-                  onClick={() => setOpenAnswerCategoryMenuId((id) => (id === category.id ? "" : category.id))}
-                  aria-label={`${category.name}更多操作`}
-                  aria-expanded={openAnswerCategoryMenuId === category.id}
-                >
-                  ⋮
-                </button>
-                {openAnswerCategoryMenuId === category.id ? (
-                  <div className="answer-category-menu">
-                    <button onClick={() => openRenameAnswerCategoryEditor(category)}>
-                      <Pencil size={13} />
-                      <span>重命名</span>
-                    </button>
-                    <button
-                      className="answer-category-menu-danger"
-                      onClick={() => {
-                        setOpenAnswerCategoryMenuId("");
-                        requestConfirm({
-                          title: "删除这个分类？",
-                          description: `「${category.name}」及其子分类会被删除，里面的答案卡会移动到「尚未归类」。`,
-                          confirmLabel: "删除分类",
-                          onConfirm: () => deleteAnswerCategory(category),
-                        });
-                      }}
-                    >
-                      <Trash2 size={13} />
-                      <span>删除</span>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
-        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "rename" && answerCategoryEditor.categoryId === category.id, depth)}
-        {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === category.id, depth + 1)}
-        {hasChildren && expanded ? children.map((child) => renderAnswerCategoryTree(child, depth + 1)) : null}
-      </div>
-    );
-  };
-
   return (
     <div className={`app ${theme}`}>
       <aside className="sidebar">
@@ -3499,7 +2616,7 @@ function App() {
               type="button"
               title="切换主题"
               aria-label={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              onClick={toggleTheme}
             >
               {theme === "dark" ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
             </button>
@@ -3590,99 +2707,206 @@ function App() {
                   <h2>今天先推进这几件事</h2>
                   <p>无需手动列清单，JobPilot 会根据岗位进度、复盘、本周计划和你指定的任务优先级安排今天要做的事。</p>
                 </div>
-                <div className="hero-number small">{todayActions.length}</div>
+                <div className="today-header-actions">
+                  <div className="today-view-toggle" role="group" aria-label="今日行动查看方式">
+                    <button
+                      type="button"
+                      className={todayActionView === "priority" ? "active-today-view" : ""}
+                      aria-pressed={todayActionView === "priority"}
+                      onClick={() => setTodayActionView("priority")}
+                    >
+                      系统推荐
+                    </button>
+                    <button
+                      type="button"
+                      className={todayActionView === "source" ? "active-today-view" : ""}
+                      aria-pressed={todayActionView === "source"}
+                      onClick={() => setTodayActionView("source")}
+                    >
+                      来源分组
+                    </button>
+                  </div>
+                  <div className="hero-number small">{todayActions.length}</div>
+                </div>
               </div>
 
-              {topTodayActions.length > 0 ? (
-                <>
-                  <div className="today-card-list">
-                    {topTodayActions.map((action, index) => (
-                      <article className={`today-action-card today-source-${action.source}`} key={todayActionKey(action)}>
-                        <span className="today-action-rank">{String(index + 1).padStart(2, "0")}</span>
-                        <button className="today-action-open" onClick={() => openTodayAction(action)}>
-                          <span className="today-action-icon" aria-hidden="true">
-                            {action.source === "opportunity" ? <BriefcaseBusiness size={16} /> : action.source === "interview" ? <FileAudio size={16} /> : <CalendarClock size={16} />}
-                          </span>
-                          <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
-                          <span className="source-chip">{todayActionSourceLabel(action)}</span>
-                          <h3>{action.title}</h3>
-                        </button>
-                        <details className="today-action-context">
-                          <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
-                            <span>来源与下一步</span>
-                            <ChevronRight size={13} aria-hidden="true" />
-                          </summary>
-                          <dl>
-                            <div>
-                              <dt>来源</dt>
-                              <dd>{todayActionSourceDetail(action)}</dd>
-                            </div>
-                            <div>
-                              <dt>为什么出现</dt>
-                              <dd>{todayActionReason(action)}</dd>
-                            </div>
-                            <div>
-                              <dt>完成后</dt>
-                              <dd>{todayActionOutcome(action)}</dd>
-                            </div>
-                          </dl>
-                        </details>
-                        <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
-                          完成
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-
-                  {moreTodayActions.length > 0 ? (
-                    <div className="today-more-panel">
-                      <button className="ghost-button today-more-toggle" onClick={() => setShowMoreTodayActions((visible) => !visible)}>
-                        {showMoreTodayActions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        <span>{showMoreTodayActions ? "收起更多行动" : `还有 ${moreTodayActions.length} 条行动`}</span>
-                      </button>
-                      {showMoreTodayActions ? (
-                        <div className="action-list today-secondary-list">
-                          {moreTodayActions.map((action) => (
-                            <div className="action-row" key={todayActionKey(action)}>
-                              <button className="action-row-main" onClick={() => openTodayAction(action)}>
-                                <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
-                                <span className="action-copy">
-                                  <strong>
-                                    <em className="source-chip">{todayActionSourceLabel(action)}</em>
-                                    {action.title}
-                                  </strong>
-                                </span>
-                              </button>
-                              <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
-                                完成
-                              </button>
-                              <details className="today-action-context today-secondary-context">
-                                <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
-                                  <span className="visually-hidden">来源与下一步</span>
-                                  <ChevronRight size={14} aria-hidden="true" />
-                                </summary>
-                                <dl>
-                                  <div>
-                                    <dt>来源</dt>
-                                    <dd>{todayActionSourceDetail(action)}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>为什么出现</dt>
-                                    <dd>{todayActionReason(action)}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>完成后</dt>
-                                    <dd>{todayActionOutcome(action)}</dd>
-                                  </div>
-                                </dl>
-                              </details>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
+              {todayActions.length > 0 || todayActionView === "source" ? (
+                todayActionView === "priority" ? (
+                  <>
+                    <div className="today-card-list">
+                      {topTodayActions.map((action, index) => (
+                        <article className={`today-action-card today-source-${action.source}`} key={todayActionKey(action)}>
+                          <span className="today-action-rank">{String(index + 1).padStart(2, "0")}</span>
+                          <button className="today-action-open" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                            <span className="today-action-icon" aria-hidden="true">
+                              {action.source === "opportunity" ? <BriefcaseBusiness size={16} /> : action.source === "interview" ? <FileAudio size={16} /> : <CalendarClock size={16} />}
+                            </span>
+                            <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                            <span className="source-chip">{todayActionSourceLabel(action)}</span>
+                            <h3>{action.title}</h3>
+                          </button>
+                          <details className="today-action-context">
+                            <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
+                              <span>来源与下一步</span>
+                              <ChevronRight size={13} aria-hidden="true" />
+                            </summary>
+                            <dl>
+                              <div>
+                                <dt>来源</dt>
+                                <dd>{todayActionSourceDetail(action)}</dd>
+                              </div>
+                              <div>
+                                <dt>为什么出现</dt>
+                                <dd>{todayActionReason(action)}</dd>
+                              </div>
+                              <div>
+                                <dt>完成后</dt>
+                                <dd>{todayActionOutcome(action)}</dd>
+                              </div>
+                            </dl>
+                          </details>
+                          <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                            完成
+                          </button>
+                        </article>
+                      ))}
                     </div>
-                  ) : null}
-                </>
+
+                    {moreTodayActions.length > 0 ? (
+                      <div className="today-more-panel">
+                        <button className="ghost-button today-more-toggle" onClick={() => setShowMoreTodayActions((visible) => !visible)}>
+                          {showMoreTodayActions ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                          <span>{showMoreTodayActions ? "收起更多行动" : `还有 ${moreTodayActions.length} 条行动`}</span>
+                        </button>
+                        {showMoreTodayActions ? (
+                          <div className="action-list today-secondary-list">
+                            {moreTodayActions.map((action) => (
+                              <div className="action-row" key={todayActionKey(action)}>
+                                <button className="action-row-main" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                                  <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                                  <span className="action-copy">
+                                    <strong>
+                                      <em className="source-chip">{todayActionSourceLabel(action)}</em>
+                                      {action.title}
+                                    </strong>
+                                  </span>
+                                </button>
+                                <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                                  完成
+                                </button>
+                                <details className="today-action-context today-secondary-context">
+                                  <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
+                                    <span className="visually-hidden">来源与下一步</span>
+                                    <ChevronRight size={14} aria-hidden="true" />
+                                  </summary>
+                                  <dl>
+                                    <div>
+                                      <dt>来源</dt>
+                                      <dd>{todayActionSourceDetail(action)}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>为什么出现</dt>
+                                      <dd>{todayActionReason(action)}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>完成后</dt>
+                                      <dd>{todayActionOutcome(action)}</dd>
+                                    </div>
+                                  </dl>
+                                </details>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="today-source-list" aria-label="按来源查看今日行动">
+                    {todayActionSourceGroups.map((group) => {
+                      const GroupIcon = group.icon;
+                      const isSourceExpanded = Boolean(expandedTodaySources[group.source]);
+                      const visibleSourceActions = isSourceExpanded ? group.actions : group.actions.slice(0, todaySourcePreviewLimit);
+                      const remainingSourceActionCount = Math.max(0, group.actions.length - todaySourcePreviewLimit);
+                      const sourceActionsId = `today-source-${group.source}-actions`;
+                      return (
+                        <section
+                          className={`today-source-group today-source-${group.source}`}
+                          key={group.source}
+                          aria-labelledby={`today-source-${group.source}-title`}
+                        >
+                          <div className="today-source-summary">
+                            <span className="today-source-summary-copy">
+                              <span className="today-action-icon today-source-icon" aria-hidden="true">
+                                <GroupIcon size={16} />
+                              </span>
+                              <span>
+                                <span className="today-source-kicker">行动主线</span>
+                                <strong id={`today-source-${group.source}-title`}>{group.label}</strong>
+                                <small>{group.detail}</small>
+                              </span>
+                            </span>
+                            <span className="today-source-count">{group.actions.length} 条行动</span>
+                          </div>
+                          {group.actions.length > 0 ? (
+                            <>
+                              <div className="action-list today-secondary-list today-source-action-list" id={sourceActionsId}>
+                                {visibleSourceActions.map((action) => (
+                                  <div className="action-row" key={todayActionKey(action)}>
+                                    <button className="action-row-main" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                                      <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                                      <span className="action-copy">
+                                        <strong>{action.title}</strong>
+                                        <small>{todayActionSourceDetail(action)}</small>
+                                      </span>
+                                    </button>
+                                    <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                                      完成
+                                    </button>
+                                    <details className="today-action-context today-secondary-context">
+                                      <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
+                                        <span className="visually-hidden">来源与下一步</span>
+                                        <ChevronRight size={14} aria-hidden="true" />
+                                      </summary>
+                                      <dl>
+                                        <div>
+                                          <dt>来源</dt>
+                                          <dd>{todayActionSourceDetail(action)}</dd>
+                                        </div>
+                                        <div>
+                                          <dt>为什么出现</dt>
+                                          <dd>{todayActionReason(action)}</dd>
+                                        </div>
+                                        <div>
+                                          <dt>完成后</dt>
+                                          <dd>{todayActionOutcome(action)}</dd>
+                                        </div>
+                                      </dl>
+                                    </details>
+                                  </div>
+                                ))}
+                              </div>
+                              {remainingSourceActionCount > 0 ? (
+                                <button
+                                  type="button"
+                                  className="ghost-button today-source-expand"
+                                  aria-expanded={isSourceExpanded}
+                                  aria-controls={sourceActionsId}
+                                  onClick={() => toggleTodaySource(group.source)}
+                                >
+                                  {isSourceExpanded ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+                                  <span>{isSourceExpanded ? "收起更多行动" : `展开剩余 ${remainingSourceActionCount} 条`}</span>
+                                </button>
+                              ) : null}
+                            </>
+                          ) : (
+                            <p className="today-source-empty">今天暂时没有这条主线的行动。</p>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </div>
+                )
               ) : (
                 <div className="empty-state home-empty-state">
                   <h3>{homeEmptyState.title}</h3>
@@ -4093,491 +3317,132 @@ function App() {
         )}
 
         {page === "interviews" && (
-          <section className="interview-page">
-            {interviewView === "list" ? (
-              <div className="surface interview-list-pane interview-home-pane paginated-pane">
-                <div className="paginated-pane-header">
-                  <PageIntro
-                    label="面试复盘"
-                    title="记录每一场面试"
-                    detail="保存面试基本信息、问题、原回答、复盘建议和优化回答。"
-                    action={`${interviewSessions.length} 场面试`}
-                    helpTooltip="待整理问题指复盘中被标记为薄弱、还需要整理或练习的问题。只要一场面试还有待整理问题，它就会进入今日行动；标记已处理后会从今日行动中移除。"
-                    helpLabel="待整理问题说明"
-                  />
-
-                  <div className="button-row tight-row">
-                    <button className="primary-button" onClick={() => openComposer("interview")}>
-                      <Upload size={16} />
-                      <span>导入面试复盘</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="paginated-pane-body">
-                  <div className="interview-card-grid paginated-pane-content">
-                    {filteredInterviewSessions.length === 0 ? (
-                      <EmptyState title="没有匹配的面试" detail="清空搜索，或导入一场新的面试复盘。" className="filtered-empty-state" />
-                    ) : visibleInterviewSessions.map((session) => {
-                      const weakCount = session.qaPairs.filter((pair) => pair.weak).length;
-                      return (
-                        <button key={session.id} className="interview-session-card" onClick={() => openInterviewSession(session.id)}>
-                          <div className="interview-card-topline">
-                            <span>{session.date}</span>
-                            <strong>{weakCount ? `${weakCount} 题待整理` : "已整理"}</strong>
-                          </div>
-                          <h3>{session.company}</h3>
-                          <p>{session.role} · {session.round}</p>
-                          <div className="interview-card-stats">
-                            <span>{session.qaPairs.length} 个问题</span>
-                            <span>{session.sourceFiles?.length ?? 0} 份材料</span>
-                            <ChevronRight size={16} />
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <ListPager
-                  className="paginated-pane-footer"
-                  label="面试复盘列表"
-                  page={safeInterviewPage}
-                  pageCount={interviewPageCount}
-                  onPageChange={setInterviewPage}
-                />
-              </div>
-            ) : (
-              <div className="surface review-editor interview-detail-pane">
-                <div className="interview-detail-nav interview-detail-nav-start">
-                  <button
-                    className="ghost-button compact-button"
-                    onClick={() => (interviewView === "question" ? setInterviewView("session") : setInterviewView("list"))}
-                  >
-                    <ChevronLeft size={14} />
-                    <span>{interviewView === "question" ? "问题目录" : "全部面试"}</span>
-                  </button>
-                </div>
-
-                {interviewView === "session" ? (
-                  <>
-                    <SectionTitle label={`${selectedInterview.date} / ${selectedInterview.round}`} title={`${selectedInterview.company} · ${selectedInterview.role}`} action={`${selectedInterview.qaPairs.length} 个问题`} />
-
-                    <div className="draft-edit-grid interview-session-edit">
-                      <label>
-                        <span>公司</span>
-                        <input value={selectedInterview.company} onChange={(event) => updateSelectedInterview({ company: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>岗位</span>
-                        <input value={selectedInterview.role} onChange={(event) => updateSelectedInterview({ role: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>轮次</span>
-                        <input value={selectedInterview.round} onChange={(event) => updateSelectedInterview({ round: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>日期</span>
-                        <input value={selectedInterview.date} onChange={(event) => updateSelectedInterview({ date: event.target.value })} />
-                      </label>
-                      <label>
-                        <span>复盘优先级</span>
-                        <select
-                          value={selectedInterview.reviewPriority ?? "P1"}
-                          onChange={(event) => updateSelectedInterview({ reviewPriority: event.target.value as OpportunityAction })}
-                        >
-                          {reviewPriorityOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>关联岗位</span>
-                        <OpportunityCombobox
-                          opportunities={opportunities}
-                          value={selectedInterview.opportunityId ?? ""}
-                          onChange={(value) => updateSelectedInterview({ opportunityId: value || undefined })}
-                          emptyLabel="未关联岗位"
-                        />
-                      </label>
-                      <label className="wide-field">
-                        <span>备注</span>
-                        <textarea
-                          value={selectedInterview.note ?? ""}
-                          onChange={(event) => updateSelectedInterview({ note: event.target.value })}
-                          placeholder="记录这场面试的背景、特殊要求或后续关注点。"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="source-panel compact-source">
-                      <SectionTitle label="面试材料" title="这场面试的录音或文字稿" action={`${selectedInterview.sourceFiles?.length ?? 0} 份`} />
-                      <div className="button-row source-panel-actions">
-                        <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={requestReparseSelectedInterview}>
-                          <RotateCcw size={14} />
-                          <span>{interviewReparseBusy ? "整理中..." : "重新整理问题"}</span>
-                        </button>
-                      </div>
-                      {interviewReparseNotice ? <p className="parse-inline-notice">{interviewReparseNotice}</p> : null}
-                      <div className="source-list">
-                        {(selectedInterview.sourceFiles ?? []).map((file) => {
-                          const Icon = file.kind === "audio" ? FileAudio : FileText;
-                          const canPreview = Boolean(file.content || file.storageUri);
-                          return (
-                            <button
-                              className="source-item source-button file-source"
-                              key={file.id}
-                              disabled={!canPreview}
-                              onClick={() => (file.content ? setPreviewSessionFile(file) : openStoredFile(file.storageUri))}
-                            >
-                              <Icon size={18} />
-                              <div>
-                                <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
-                                <strong>{file.fileName}</strong>
-                                <small>
-                                  {file.detail}
-                                  {file.duration ? ` / ${file.duration}` : ""}
-                                  {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
-                                </small>
-                              </div>
-                              <em>{file.uploadedAt}</em>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="interview-toolbar">
-                      <span>问题目录</span>
-                      <div className="mini-actions">
-                        <button className="secondary-button compact-button" onClick={addQaPair}>
-                          <Plus size={14} />
-                          <span>添加问题</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="qa-list qa-directory-list">
-                      {selectedInterview.qaPairs.map((pair) => (
-                        <button className={`qa-card qa-card-button ${pair.weak ? "weak" : ""} ${pair.id === selectedQa.id ? "selected-qa" : ""}`} key={pair.id} onClick={() => openInterviewQuestion(pair.id)}>
-                          <div>
-                            <span className="type-pill">{pair.type}</span>
-                            <h3>{pair.question}</h3>
-                            <p>{pair.critique}</p>
-                          </div>
-                          <div className="score">{pair.score}/5</div>
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="danger-zone">
-                      <span>危险操作</span>
-                      <button
-                        className="destructive-button compact-button"
-                        onClick={() =>
-                          requestConfirm({
-                            title: "删除这场面试？",
-                            description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
-                            confirmLabel: "删除面试",
-                            onConfirm: deleteSelectedInterview,
-                          })
-                        }
-                      >
-                        删除整场面试
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <SectionTitle label={`${selectedInterview.company} / ${selectedInterview.round}`} title={selectedQa.question} action={selectedQa.weak ? "需练习" : "可复用"} />
-                    <div className="interview-question-context">
-                      <span>{selectedInterview.role}</span>
-                      <span>{selectedInterview.date}</span>
-                      <span>{selectedQa.type}</span>
-                      <strong>{selectedQa.score}/5</strong>
-                    </div>
-
-                    <ReviewBlock label="面试问题" value={selectedQa.question} onChange={(value) => updateSelectedQa("question", value)} />
-                    <ReviewBlock
-                      label="我的原回答"
-                      value={selectedQa.originalAnswer}
-                      onChange={(value) => updateSelectedQa("originalAnswer", value)}
-                    />
-                    <ReviewBlock
-                      label="复盘建议"
-                      value={selectedQa.critique}
-                      onChange={(value) => updateSelectedQa("critique", value)}
-                    />
-                    <ReviewBlock
-                      label="推荐回答框架"
-                      value={selectedQa.framework}
-                      onChange={(value) => updateSelectedQa("framework", value)}
-                    />
-                    <ReviewBlock
-                      label="具体优化回答"
-                      value={selectedQa.optimizedAnswer}
-                      onChange={(value) => updateSelectedQa("optimizedAnswer", value)}
-                    />
-
-                    <div className="button-row">
-                      <button className="primary-button" onClick={createAnswerCard}>
-                        <BookOpenCheck size={16} />
-                        <span>生成答案卡</span>
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={addSelectedQaToPractice}
-                      >
-                        <ClipboardList size={16} />
-                        <span>加入练习</span>
-                      </button>
-                      <button className="secondary-button" onClick={() => updateSelectedQaWeak(!selectedQa.weak)}>
-                        <Check size={16} />
-                        <span>{selectedQa.weak ? "标记已处理" : "重新标为薄弱"}</span>
-                      </button>
-                    </div>
-
-                    <div className="danger-zone">
-                      <span>危险操作</span>
-                      <button
-                        className="destructive-button compact-button"
-                        onClick={() =>
-                          requestConfirm({
-                            title: "删除这个问题？",
-                            description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
-                            confirmLabel: "删除问题",
-                            onConfirm: deleteSelectedQa,
-                          })
-                        }
-                      >
-                        删除当前问题
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </section>
+          <InterviewsPage
+            interviewSessions={interviewSessions}
+            filteredInterviewSessions={filteredInterviewSessions}
+            visibleInterviewSessions={visibleInterviewSessions}
+            safeInterviewPage={safeInterviewPage}
+            interviewPageCount={interviewPageCount}
+            interviewView={interviewView}
+            selectedInterview={selectedInterview}
+            selectedQa={selectedQa}
+            opportunities={opportunities}
+            reviewPriorityOptions={reviewPriorityOptions}
+            interviewReparseBusy={interviewReparseBusy}
+            interviewReparseNotice={interviewReparseNotice}
+            onOpenComposer={() => openComposer("interview")}
+            onOpenInterviewSession={openInterviewSession}
+            onInterviewPageChange={setInterviewPage}
+            onInterviewViewChange={setInterviewView}
+            onUpdateSelectedInterview={updateSelectedInterview}
+            onRequestReparseSelectedInterview={requestReparseSelectedInterview}
+            onOpenStoredFile={openStoredFile}
+            onPreviewSessionFile={setPreviewSessionFile}
+            onAddQaPair={addQaPair}
+            onOpenInterviewQuestion={openInterviewQuestion}
+            onRequestDeleteInterview={() =>
+              requestConfirm({
+                title: "删除这场面试？",
+                description: `「${selectedInterview.company} / ${selectedInterview.round}」及其中所有问题会一并删除，且无法恢复。`,
+                confirmLabel: "删除面试",
+                onConfirm: deleteSelectedInterview,
+              })
+            }
+            onUpdateSelectedQa={updateSelectedQa}
+            onCreateAnswerCard={createAnswerCard}
+            onAddSelectedQaToPractice={addSelectedQaToPractice}
+            onUpdateSelectedQaWeak={updateSelectedQaWeak}
+            onRequestDeleteQa={() =>
+              requestConfirm({
+                title: "删除这个问题？",
+                description: `「${selectedQa.question}」及其回答、评价会一并删除，且无法恢复。`,
+                confirmLabel: "删除问题",
+                onConfirm: deleteSelectedQa,
+              })
+            }
+          />
         )}
 
         {page === "answers" && (
-          <section className={`answer-workspace ${answerCategorySidebarCollapsed ? "answer-workspace-collapsed" : ""}`}>
-            {!answerCategorySidebarCollapsed ? (
-              <div className="surface answer-category-pane">
-                <div className="answer-category-header">
-                  <SectionTitle label="分类" title="答案文件夹" action={`${answerCategories.length} 个`} />
-                  <button className="answer-category-icon-action" onClick={() => setAnswerCategorySidebarCollapsed(true)} aria-label="收起分类侧栏">
-                    <PanelRight size={15} />
-                  </button>
-                </div>
-                <div className="answer-category-tree">
-                  <div className={`answer-category-row answer-category-all-row ${isAllAnswerCategorySelected ? "active" : ""}`}>
-                    <span className="answer-category-toggle" />
-                    <button
-                      className="answer-category-main"
-                      aria-current={isAllAnswerCategorySelected ? "true" : undefined}
-                      onClick={() => {
-                        setSelectedAnswerCategoryId(allAnswerCategoryId);
-                        setOpenAnswerCategoryMenuId("");
-                        setAnswerPage(0);
-                        setAnswerView("list");
-                      }}
-                    >
-                      <Library size={16} />
-                      <span>全部答案</span>
-                      <strong>{answerCards.length}</strong>
-                    </button>
-                    <div className="answer-category-actions">
-                      <button className="answer-category-icon-action" onClick={() => openCreateAnswerCategoryEditor()} aria-label="新增顶层分类">
-                        <Plus size={13} />
-                      </button>
-                    </div>
-                  </div>
-                  {renderAnswerCategoryEditor(answerCategoryEditor?.mode === "create" && answerCategoryEditor.parentId === "", 0)}
-                  {rootAnswerCategories.map((category) => renderAnswerCategoryTree(category))}
-                </div>
-              </div>
-            ) : null}
-            {answerView === "list" ? (
-              <div className="surface answer-list-pane answer-home-pane paginated-pane">
-                <div className="paginated-pane-header">
-                  {answerCategorySidebarCollapsed ? (
-                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
-                      <PanelRight size={14} />
-                      <span>显示分类</span>
-                    </button>
-                  ) : null}
-                  <PageIntro
-                    label={selectedAnswerCategoryLabel}
-                    title="沉淀可复用回答"
-                    detail="答案卡可以手动添加，也可以从面试复盘生成；可随机抽练，或加入本周计划形成练习行动。"
-                    action={`${filteredAnswerCards.length}/${selectedAnswerCategoryTotal} 张卡片`}
-                  />
-                  <div className="button-row tight-row">
-                    <button className="primary-button" onClick={() => openComposer("answer")}>
-                      <Plus size={16} />
-                      <span>新增答案卡</span>
-                    </button>
-                    <button className="secondary-button answer-random-button" onClick={startRandomAnswerPractice} disabled={randomPracticeSpinning || filteredAnswerCards.length === 0}>
-                      <Sparkles size={16} />
-                      <span>{randomPracticeSpinning ? "抽取中..." : "随机抽练"}</span>
-                    </button>
-                    <button className="secondary-button" onClick={() => goTo("interviews")}>
-                      <FileAudio size={16} />
-                      <span>从复盘生成</span>
-                    </button>
-                  </div>
-                </div>
-                <div className="paginated-pane-body">
-                  {(randomPracticeCard || randomPracticeSpinning) && (
-                    <div className={`answer-practice-panel ${randomPracticeSpinning ? "is-shuffling" : ""}`}>
-                      <div className="answer-practice-deck" aria-hidden="true">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                      <div className="answer-practice-copy">
-                        <span className="eyebrow">临时练习</span>
-                        <h3>{randomPracticeSpinning ? "正在洗牌抽题..." : randomPracticeCard?.question}</h3>
-                        <p>
-                          {randomPracticeSpinning
-                            ? "从当前答案库里随机挑一张，不会加入本周计划。"
-                            : randomPracticeCard?.framework}
-                        </p>
-                      </div>
-                      {!randomPracticeSpinning && randomPracticeCard ? (
-                        <div className="answer-practice-actions">
-                          <button className="primary-button compact-button" onClick={() => setRandomPracticeReveal((visible) => !visible)}>
-                            {randomPracticeReveal ? "收起答案" : "显示推荐回答"}
-                          </button>
-                          <button className="secondary-button compact-button" onClick={startRandomAnswerPractice}>
-                            换一张
-                          </button>
-                          <button className="ghost-button compact-button" onClick={() => openAnswerCard(randomPracticeCard.id)}>
-                            打开卡片
-                          </button>
-                        </div>
-                      ) : null}
-                      {!randomPracticeSpinning && randomPracticeCard && randomPracticeReveal ? (
-                        <div className="answer-practice-answer">
-                          {randomPracticeCard.answer}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                  <div className="answer-list paginated-pane-content">
-                    {filteredAnswerCards.length === 0 ? (
-                      <p className="empty-list-note">没有匹配的答案卡，试试换个关键词。</p>
-                    ) : (
-                      visibleAnswerCards.map((card) => (
-                        <button
-                          className={`answer-card answer-card-button ${selectedAnswer.id === card.id ? "selected-answer" : ""} ${draggedAnswerCardId === card.id ? "is-dragging" : ""}`}
-                          key={card.id}
-                          draggable
-                          title="拖到左侧分类可移动"
-                          aria-label={`打开答案卡：${card.question}。可拖到左侧分类移动。`}
-                          onDragStart={(event) => handleAnswerCardDragStart(event, card)}
-                          onDragEnd={clearAnswerCardDragState}
-                          onClick={() => openAnswerCard(card.id)}
-                        >
-                          <div>
-                            <span className="type-pill">{card.type}</span>
-                            <h3>{card.question}</h3>
-                          </div>
-                          <small>{card.status === "DRAFT" ? "草稿" : "可复用"} / {card.practiceStatus}</small>
-                          <span className="answer-card-category">{answerCategoryById.get(resolveAnswerCategoryId(card))?.name ?? "尚未归类"}</span>
-                          <ChevronRight size={16} />
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-                <ListPager
-                  className="paginated-pane-footer"
-                  label="答案卡列表"
-                  page={safeAnswerPage}
-                  pageCount={answerPageCount}
-                  onPageChange={setAnswerPage}
-                />
-              </div>
-            ) : (
-              <div className="surface answer-editor answer-detail-pane">
-                <div className="interview-detail-nav interview-detail-nav-start">
-                  {answerCategorySidebarCollapsed ? (
-                    <button className="secondary-button compact-button answer-category-reopen" onClick={() => setAnswerCategorySidebarCollapsed(false)}>
-                      <PanelRight size={14} />
-                      <span>显示分类</span>
-                    </button>
-                  ) : null}
-                  <button className="ghost-button compact-button" onClick={() => setAnswerView("list")}>
-                    <ChevronLeft size={14} />
-                    <span>返回{selectedAnswerCategoryLabel}</span>
-                  </button>
-                </div>
-                <SectionTitle
-                  label={`${selectedAnswer.source} / ${answerCategoryById.get(resolveAnswerCategoryId(selectedAnswer))?.name ?? "尚未归类"}`}
-                  title={selectedAnswer.question}
-                  action={selectedAnswer.status === "DRAFT" ? "草稿" : "可复用"}
-                />
-                <ReviewBlock label="问题" value={selectedAnswer.question} onChange={(value) => updateSelectedAnswer("question", value)} />
-                <ReviewBlock label="回答框架" value={selectedAnswer.framework} onChange={(value) => updateSelectedAnswer("framework", value)} />
-                <ReviewBlock label="推荐回答" value={selectedAnswer.answer} onChange={(value) => updateSelectedAnswer("answer", value)} />
-                <ReviewBlock label="适用岗位" value={selectedAnswer.relatedRoles} onChange={(value) => updateSelectedAnswer("relatedRoles", value)} />
-                <div className="inline-controls">
-                  <label>
-                    <span>卡片状态</span>
-                    <select value={selectedAnswer.status} onChange={(event) => updateSelectedAnswer("status", event.target.value)}>
-                      <option value="DRAFT">草稿</option>
-                      <option value="ACTIVE">可复用</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>练习状态</span>
-                    <select value={selectedAnswer.practiceStatus} onChange={(event) => updateSelectedAnswer("practiceStatus", event.target.value)}>
-                      <option value="薄弱">薄弱</option>
-                      <option value="中等">中等</option>
-                      <option value="熟练">熟练</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>移动到</span>
-                    <select value={resolveAnswerCategoryId(selectedAnswer)} onChange={(event) => updateSelectedAnswer("categoryId", event.target.value)}>
-                      {answerCategoryOptions.map(({ category, label }) => (
-                        <option key={category.id} value={category.id}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="button-row">
-                  <button className="secondary-button" onClick={addSelectedAnswerToPractice}>
-                    <ClipboardList size={16} />
-                    <span>加入本周计划</span>
-                  </button>
-                </div>
-
-                <div className="danger-zone">
-                  <span>危险操作</span>
-                  <button
-                    className="destructive-button"
-                    onClick={() =>
-                      requestConfirm({
-                        title: "删除这张答案卡？",
-                        description: `「${selectedAnswer.question}」删除后无法恢复。`,
-                        confirmLabel: "删除卡片",
-                        onConfirm: deleteSelectedAnswer,
-                      })
-                    }
-                  >
-                    删除当前卡
-                  </button>
-                </div>
-              </div>
-            )}
-          </section>
+          <AnswersPage
+            answerCards={answerCards}
+            answerCategories={answerCategories}
+            rootAnswerCategories={rootAnswerCategories}
+            answerCategoryChildren={answerCategoryChildren}
+            answerCategoryById={answerCategoryById}
+            answerCategoryOptions={answerCategoryOptions}
+            answerCategoryEditor={answerCategoryEditor}
+            openAnswerCategoryMenuId={openAnswerCategoryMenuId}
+            expandedAnswerCategoryIds={expandedAnswerCategoryIds}
+            answerCategoryDropTargetId={answerCategoryDropTargetId}
+            answerCategorySidebarCollapsed={answerCategorySidebarCollapsed}
+            answerView={answerView}
+            selectedAnswer={selectedAnswer}
+            selectedAnswerCategory={selectedAnswerCategory}
+            selectedAnswerCategoryLabel={selectedAnswerCategoryLabel}
+            selectedAnswerCategoryTotal={selectedAnswerCategoryTotal}
+            isAllAnswerCategorySelected={isAllAnswerCategorySelected}
+            filteredAnswerCards={filteredAnswerCards}
+            visibleAnswerCards={visibleAnswerCards}
+            safeAnswerPage={safeAnswerPage}
+            answerPageCount={answerPageCount}
+            draggedAnswerCardId={draggedAnswerCardId}
+            randomPracticeCard={randomPracticeCard}
+            randomPracticeSpinning={randomPracticeSpinning}
+            randomPracticeReveal={randomPracticeReveal}
+            resolveAnswerCategoryId={resolveAnswerCategoryId}
+            onSelectAllCategory={() => {
+              setSelectedAnswerCategoryId(allAnswerCategoryId);
+              setOpenAnswerCategoryMenuId("");
+              setAnswerPage(0);
+              setAnswerView("list");
+            }}
+            onSelectCategory={(categoryId) => {
+              setSelectedAnswerCategoryId(categoryId);
+              setOpenAnswerCategoryMenuId("");
+              setAnswerPage(0);
+              setAnswerView("list");
+            }}
+            onCreateCategory={openCreateAnswerCategoryEditor}
+            onRenameCategory={openRenameAnswerCategoryEditor}
+            onDeleteCategoryRequest={(category) => {
+              setOpenAnswerCategoryMenuId("");
+              requestConfirm({
+                title: "删除这个分类？",
+                description: `「${category.name}」及其子分类会被删除，里面的答案卡会移动到「尚未归类」。`,
+                confirmLabel: "删除分类",
+                onConfirm: () => deleteAnswerCategory(category),
+              });
+            }}
+            onToggleCategoryExpanded={toggleAnswerCategoryExpanded}
+            onToggleCategoryMenu={(categoryId) => setOpenAnswerCategoryMenuId((id) => (id === categoryId ? "" : categoryId))}
+            onCategoryEditorNameChange={(name) => setAnswerCategoryEditor((editor) => (editor ? { ...editor, name } : editor))}
+            onCommitCategoryEditor={commitAnswerCategoryEditor}
+            onCancelCategoryEditor={() => setAnswerCategoryEditor(null)}
+            onAnswerCategoryDragOver={handleAnswerCategoryDragOver}
+            onAnswerCategoryDragLeave={handleAnswerCategoryDragLeave}
+            onAnswerCategoryDrop={handleAnswerCategoryDrop}
+            onAnswerCardDragStart={handleAnswerCardDragStart}
+            onAnswerCardDragEnd={clearAnswerCardDragState}
+            onSidebarCollapsedChange={setAnswerCategorySidebarCollapsed}
+            onOpenComposer={() => openComposer("answer")}
+            onStartRandomPractice={startRandomAnswerPractice}
+            onToggleRandomPracticeReveal={toggleRandomPracticeReveal}
+            onOpenAnswerCard={openAnswerCard}
+            onGoToInterviews={() => goTo("interviews")}
+            onAnswerPageChange={setAnswerPage}
+            onAnswerViewChange={setAnswerView}
+            onUpdateSelectedAnswer={updateSelectedAnswer}
+            onAddSelectedAnswerToPractice={addSelectedAnswerToPractice}
+            onDeleteSelectedAnswerRequest={() =>
+              requestConfirm({
+                title: "删除这张答案卡？",
+                description: `「${selectedAnswer.question}」删除后无法恢复。`,
+                confirmLabel: "删除卡片",
+                onConfirm: deleteSelectedAnswer,
+              })
+            }
+          />
         )}
 
         {page === "resumes" && (
@@ -4684,1150 +3549,130 @@ function App() {
         )}
 
         {page === "weekly" && (
-          <section className="weekly-workspace">
-            <div className="surface weekly-board paginated-pane">
-              <div className="paginated-pane-header">
-                <PageIntro
-                  label="本周计划"
-                  title="安排本周要练的事"
-                  detail="本周计划可包含面试表达练习、笔试准备、作品集整理和材料补充等，拆成本周可以完成的小任务。"
-                  action={`${visibleTrainingTaskCount} 待完成`}
-                />
-                <div className="weekly-overview">
-                  <div className="weekly-progress-card">
-                    <span>本周投递</span>
-                    <strong>{submittedApplications}/{weeklyTargetApplications}</strong>
-                    <SegmentedProgress value={weeklyTargetApplications > 0 ? (submittedApplications / weeklyTargetApplications) * 100 : 0} segments={12} />
-                  </div>
-                  <label className="weekly-goal-card">
-                    <span>目标</span>
-                    <input
-                      type="number"
-                      min="0"
-                      value={weeklyTargetDraft}
-                      onBlur={restoreWeeklyTargetDraft}
-                      onChange={(event) => updateWeeklyTargetDraft(event.target.value)}
-                    />
-                    <small>本周想投递多少个岗位</small>
-                  </label>
-                </div>
-              </div>
-
-              <div className="paginated-pane-body">
-                <div className="weekly-group-list weekly-groups-page">
-                  {weeklyTaskGroups.map((group) => {
-                    if (group.id === "interview" && !group.tasks.length) return null;
-
-                    const page = group.id === "interview" ? weeklyInterviewPage : weeklyPracticePage;
-                    const setPage = group.id === "interview" ? setWeeklyInterviewPage : setWeeklyPracticePage;
-                    const taskList = paginateWeeklyGroupTasks(group.tasks, page, group.id);
-                    const visibleTasks = taskList.visible;
-                    const showAddCard = group.id === "practice" && taskList.safePage === 0;
-
-                    return (
-                      <section className="weekly-task-group" key={group.id}>
-                        <div className="weekly-group-header">
-                          <div>
-                            <h3>{group.title}</h3>
-                            <p>{group.detail}</p>
-                          </div>
-                          <span>{group.tasks.length} 项</span>
-                        </div>
-                        <div className="weekly-examples">
-                          {group.examples.map((example) => (
-                            <small key={example}>{example}</small>
-                          ))}
-                        </div>
-                        <div className="weekly-task-list">
-                          {showAddCard ? (
-                            <button className="weekly-add-card" onClick={openWeeklyTaskDialog}>
-                              <Plus size={18} />
-                              <strong>添加动作</strong>
-                              <span>新增一张自主训练卡片</span>
-                            </button>
-                          ) : null}
-                          {group.id === "practice" && group.tasks.length === 0 ? (
-                            <p className="empty-list-note weekly-empty-note">还没有自主训练动作，可以先添加笔试、作品集或项目表达练习。</p>
-                          ) : null}
-                          {visibleTasks.map((task) => (
-                            <article className={`weekly-task ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
-                              <div className="weekly-task-header">
-                                <span>{task.status === "done" ? "已完成" : task.level ?? "P2"}</span>
-                                <small>{task.sourceLabel}</small>
-                              </div>
-                              <h3>{task.title}</h3>
-                              <p>{task.detail}</p>
-                              <div className="weekly-task-actions">
-                                <button
-                                  className="weekly-card-action is-primary"
-                                  onClick={() => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
-                                >
-                                  {task.status === "done" ? "重新打开" : "标记已完成"}
-                                </button>
-                                <button
-                                  className="weekly-card-action is-danger"
-                                  onClick={() =>
-                                    requestConfirm({
-                                      title: "删除这条动作？",
-                                      description: `「${task.title}」删除后不再出现在本周计划里。`,
-                                      confirmLabel: "删除",
-                                      onConfirm: () => deleteWeeklyTask(task.id),
-                                    })
-                                  }
-                                >
-                                  删除
-                                </button>
-                              </div>
-                            </article>
-                          ))}
-                        </div>
-                        <ListPager
-                          className="weekly-section-pager"
-                          label={`${group.title}任务`}
-                          page={taskList.safePage}
-                          pageCount={taskList.pageCount}
-                          onPageChange={setPage}
-                        />
-                      </section>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </section>
+          <WeeklyPage
+            groups={weeklyTaskGroups}
+            visibleTrainingTaskCount={visibleTrainingTaskCount}
+            submittedApplications={submittedApplications}
+            targetApplications={weeklyTargetApplications}
+            targetDraft={weeklyTargetDraft}
+            interviewPage={weeklyInterviewPage}
+            practicePage={weeklyPracticePage}
+            onTargetDraftChange={updateWeeklyTargetDraft}
+            onTargetDraftBlur={restoreWeeklyTargetDraft}
+            onInterviewPageChange={setWeeklyInterviewPage}
+            onPracticePageChange={setWeeklyPracticePage}
+            onAddPracticeTask={openWeeklyTaskDialog}
+            onToggleTaskStatus={(task) => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
+            onDeleteTaskRequest={(task) =>
+              requestConfirm({
+                title: "删除这条动作？",
+                description: `「${task.title}」删除后不再出现在本周计划里。`,
+                confirmLabel: "删除",
+                onConfirm: () => deleteWeeklyTask(task.id),
+              })
+            }
+          />
         )}
 
         {page === "exports" && (
-          <section className="surface">
-            <PageIntro
-              label="设置与备份"
-              title="管理数据和智能整理"
-              detail="在这里备份数据、导出复习材料，也可以选择是否开启智能整理能力。"
-              action={isPublicDemo ? "演示模式" : isApiEnabled ? "本地保存" : "浏览器保存"}
-            />
-            <div className="settings-grid">
-              <ExportAction icon={Archive} title="备份全部数据" detail="保存岗位、面试、答案和简历记录。" onClick={exportBackup} />
-              <ExportAction icon={Upload} title="恢复备份" detail="从之前导出的备份文件恢复数据。" onClick={importBackupFromFile} />
-              <ExportAction icon={FileDown} title="导出答案卡" detail="下载一份方便复习的材料。" onClick={exportAnswerCards} />
-              <ExportAction icon={PanelRight} title="导出面试复盘" detail="下载问题、复盘建议和优化回答。" onClick={exportInterviewReviews} />
-            </div>
-            <div className="settings-panel">
-              <SectionTitle label="智能整理" title="让系统帮你读材料" action={aiSettings.provider === "none" ? "未开启" : "已配置"} />
-              <p>
-                默认可以直接读取文字文件。需要识别截图、转写录音或整理长文本时，可以在这里接入你自己的模型服务。
-              </p>
-              <div className="draft-edit-grid">
-                <label>
-                  <span>服务商</span>
-                  <select value={aiSettings.provider} onChange={(event) => updateAiSettings({ provider: event.target.value as AiSettings["provider"] })}>
-                    <option value="none">暂不启用</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="custom">自定义兼容接口</option>
-                  </select>
-                </label>
-                <label>
-                  <span>模型</span>
-                  <input value={aiSettings.model} onChange={(event) => updateAiSettings({ model: event.target.value })} placeholder="填写你常用的模型名称" />
-                </label>
-                <label>
-                  <span>文字材料整理</span>
-                  <select value={aiSettings.parseMode} onChange={(event) => updateAiSettings({ parseMode: event.target.value as AiSettings["parseMode"] })}>
-                    <option value="mock">基础整理</option>
-                    <option value="assist">智能整理</option>
-                  </select>
-                </label>
-                <label>
-                  <span>录音转文字</span>
-                  <select value={aiSettings.transcriptionMode} onChange={(event) => updateAiSettings({ transcriptionMode: event.target.value as AiSettings["transcriptionMode"] })}>
-                    <option value="mock">暂不启用</option>
-                    <option value="assist">启用转写</option>
-                  </select>
-                </label>
-                <label className="wide-field">
-                  <span>访问密钥（只保存在本机）</span>
-                  <input
-                    type="password"
-                    value={aiSettings.apiKey}
-                    onChange={(event) => updateAiSettings({ apiKey: event.target.value })}
-                    placeholder="可选，只有开启智能整理时需要"
-                  />
-                </label>
-                <label className="wide-field">
-                  <span>服务地址（可选）</span>
-                  <input value={aiSettings.endpoint} onChange={(event) => updateAiSettings({ endpoint: event.target.value })} placeholder="使用自定义服务时填写" />
-                </label>
-                <label className="wide-field">
-                  <span>备注</span>
-                  <textarea value={aiSettings.notes} onChange={(event) => updateAiSettings({ notes: event.target.value })} placeholder="例如：用于整理面试文字稿或识别截图。" />
-                </label>
-              </div>
-              <div className="button-row">
-                <button className="primary-button" onClick={() => setSystemMessage("设置已保存")}>
-                  <Settings size={16} />
-                  <span>保存设置</span>
-                </button>
-                <button
-                  className="secondary-button"
-                  onClick={() => {
-                    setAiSettings(defaultAiSettings);
-                    setSystemMessage("设置已重置");
-                  }}
-                >
-                  重置设置
-                </button>
-              </div>
-            </div>
-          </section>
+          <SettingsPage
+            isPublicDemo={isPublicDemo}
+            isApiEnabled={isApiEnabled}
+            aiSettings={aiSettings}
+            onAiSettingsChange={updateAiSettings}
+            onSaveSettings={() => setSystemMessage("设置已保存")}
+            onResetSettings={() => {
+              resetAiSettings();
+              setSystemMessage("设置已重置");
+            }}
+            onExportBackup={exportBackup}
+            onImportBackup={importBackup}
+            onExportAnswerCards={exportAnswerCards}
+            onExportInterviewReviews={exportInterviewReviews}
+          />
         )}
 
         {composer && (
-          <div
-            className="asset-preview"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="composer-dialog-title"
-            onMouseDown={markModalBackdropPointerStart}
-            onClick={(event) => closeModalFromBackdropClick(event, () => setComposer(null))}
-          >
-            <div className="asset-preview-panel module-composer-panel" onClick={(event) => event.stopPropagation()}>
-              <button className="modal-close-button" onClick={() => setComposer(null)} aria-label="关闭">
-                <X size={16} />
-              </button>
-              <SectionTitle
-                titleId="composer-dialog-title"
-                label={composerStep === "source" ? "步骤 1 / 2" : "步骤 2 / 2"}
-                title={
-                  composer === "opportunity"
-                    ? "新增岗位"
-                    : composer === "interview"
-                      ? "新增面试复盘"
-                      : composer === "resume"
-                        ? "上传简历版本"
-                        : "新增答案卡"
-                }
-                action={composerStep === "source" ? "选择材料" : "确认内容"}
-              />
-              <p>
-                {composerStep === "source"
-                  ? composer === "interview"
-                    ? "选择你现在手里的材料：已经整理好的复盘文档可以直接导入；只有原始转写稿时，可以让系统帮你整理。"
-                    : composer === "opportunity"
-                      ? "上传 JD 文件，粘贴招聘链接，或直接粘贴文字至岗位描述。"
-                      : composer === "resume"
-                        ? "上传简历文件，系统会尽量帮你提取版本名称、适合方向和核心卖点。"
-                        : "上传文件，或直接粘贴文字内容。系统会尽量帮你提取关键信息。"
-                  : composer === "opportunity"
-                    ? "确认公司、岗位和下一步动作，可补充其他信息。"
-                    : "请检查整理结果，补齐必要信息后保存。"}
-              </p>
-
-              <div className="composer-steps">
-                <span className={composerStep === "source" ? "active-step" : ""}>01 选择材料</span>
-                <span className={composerStep === "review" ? "active-step" : ""}>02 确认内容</span>
-              </div>
-
-              {composerStep === "source" && composer !== "answer" && (
-                <div className={`composer-source-grid ${composer === "resume" ? "resume-file-only" : ""}`.trim()}>
-                  {composer === "interview" && (
-                    <div className="interview-import-mode wide-field">
-                      <button
-                        className={interviewInputMode === "review-json" ? "active-import-mode" : ""}
-                        aria-pressed={interviewInputMode === "review-json"}
-                        onClick={() => {
-                          setInterviewInputMode("review-json");
-                          setComposerSource((source) => ({ ...source, sourceKind: "transcript", fileName: "", storageUri: undefined, extractionStatus: undefined }));
-                          setComposerParseNotice("");
-                        }}
-                      >
-                        <strong>我已经整理好了</strong>
-                        <span>粘贴或上传复盘文档，直接生成面试复盘</span>
-                      </button>
-                      <button
-                        className={interviewInputMode === "raw-transcript" ? "active-import-mode" : ""}
-                        aria-pressed={interviewInputMode === "raw-transcript"}
-                        onClick={() => {
-                          setInterviewInputMode("raw-transcript");
-                          setComposerSource((source) => ({ ...source, sourceKind: "transcript", extractionStatus: undefined }));
-                          setComposerParseNotice("");
-                        }}
-                      >
-                        <strong>帮我整理文字稿</strong>
-                        <span>粘贴原始转写稿，让系统先整理问题</span>
-                      </button>
-                    </div>
-                  )}
-
-                  <label className="upload-dropzone">
-                    <Upload size={22} />
-                    <strong>
-                      {composerSource.fileName ||
-                        (composer === "interview" && interviewInputMode === "review-json"
-                          ? "上传复盘文档"
-                          : "选择文件")}
-                    </strong>
-                    <small>
-                      {composer === "opportunity"
-                        ? "支持截图、PDF、.txt、.md。"
-                        : composer === "interview"
-                          ? interviewInputMode === "review-json"
-                            ? "支持 .json，或包含同样 JSON 结构的 .txt / .md。"
-                            : "支持录音、.txt、.md、.docx。"
-                          : "支持图片、PDF、.txt、.md、.docx。"}
-                    </small>
-                    <small>{uploadStatusLabel(composerSource)}</small>
-                    {composerSource.extractionStatus && <small>{extractionStatusLabel(composerSource.extractionStatus)}</small>}
-                    <input
-                      type="file"
-                      accept={
-                        composer === "opportunity"
-                          ? "image/*,.pdf,.txt,.md"
-                          : composer === "interview"
-                            ? interviewInputMode === "review-json"
-                              ? ".json,.txt,.md"
-                              : "audio/*,.txt,.md,.docx"
-                            : "image/*,.pdf,.txt,.md,.docx"
-                      }
-                      onChange={(event) => handleComposerFileSelected(event.target.files)}
-                    />
-                  </label>
-
-                  {composer !== "interview" && composer !== "resume" && (
-                    <div className="source-side">
-                      <label>
-                        <span>材料类型</span>
-                        <select value={composerSource.sourceKind} onChange={(event) => updateComposerSource("sourceKind", event.target.value)}>
-                          <option value="jd-text">岗位描述 / 文件</option>
-                          <option value="screenshot">岗位截图</option>
-                          <option value="job-link">招聘链接</option>
-                        </select>
-                      </label>
-                      {composer === "opportunity" && composerSource.sourceKind === "job-link" ? (
-                        <label>
-                          <span>招聘链接</span>
-                          <input
-                            value={composerSource.note}
-                            onChange={(event) => updateComposerSource("note", event.target.value)}
-                            placeholder="https://jobs.example.com/..."
-                          />
-                        </label>
-                      ) : (
-                        <label>
-                          <span>{composer === "opportunity" ? "招聘链接" : "备注说明"}</span>
-                          <input
-                            value={composerSource.note}
-                            onChange={(event) => updateComposerSource("note", event.target.value)}
-                            placeholder="https://jobs.example.com/..."
-                          />
-                        </label>
-                      )}
-                    </div>
-                  )}
-
-                  {composer !== "resume" && (
-                    <label className="wide-field source-text-input">
-                      <span>
-                        {composer === "opportunity"
-                          ? "岗位描述"
-                          : composer === "interview" && interviewInputMode === "review-json"
-                            ? "整理好的复盘内容"
-                            : "原始录音转写稿"}
-                      </span>
-                      <textarea
-                        value={composerSource.rawText}
-                        onChange={(event) => updateComposerSource("rawText", event.target.value)}
-                        placeholder={
-                          composer === "opportunity"
-                            ? "粘贴岗位描述后，可以继续确认岗位信息。"
-                            : composer === "interview" && interviewInputMode === "review-json"
-                              ? "把外部工具整理好的复盘粘贴到这里。内容应包含原问题、原回答、评价、优化框架、优化回答。"
-                              : "把未整理的面试转写稿粘贴到这里。"
-                        }
-                      />
-                    </label>
-                  )}
-                  {composer === "interview" && interviewInputMode === "review-json" && (
-                    <div className="wide-field interview-json-guide">
-                      <div>
-                        <strong>还没有整理？可以先复制整理模板</strong>
-                        <span>把面试文字稿贴到常用 AI 工具里整理，再把结果粘回上面的输入框。</span>
-                      </div>
-                      <textarea readOnly value={interviewReviewJsonPrompt} />
-                      <button
-                        className="secondary-button compact-button"
-                        onClick={() => {
-                          void navigator.clipboard?.writeText(interviewReviewJsonPrompt);
-                          setSystemMessage("整理模板已复制");
-                        }}
-                      >
-                        复制整理模板
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {composerStep === "review" && (
-              <div className="draft-edit-grid composer-grid">
-                {composer === "opportunity" && (
-                  <>
-                    <label>
-                      <span>公司 *</span>
-                      <input value={composerDraft.company} onChange={(event) => updateComposerDraft("company", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>岗位名称 *</span>
-                      <input value={composerDraft.title} onChange={(event) => updateComposerDraft("title", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>城市</span>
-                      <input value={composerDraft.city} onChange={(event) => updateComposerDraft("city", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>下一步动作</span>
-                      <input value={composerDraft.nextAction} onChange={(event) => updateComposerDraft("nextAction", event.target.value)} />
-                    </label>
-                    <div className="date-field">
-                      <label htmlFor="composer-opportunity-due-date">截止日期</label>
-                      <DatePickerInput
-                        id="composer-opportunity-due-date"
-                        value={composerDraft.dueDate}
-                        label="截止日期"
-                        onChange={(value) => updateComposerDraft("dueDate", value)}
-                      />
-                    </div>
-                    <label>
-                      <span>主观优先级</span>
-                      <select value={composerDraft.priority} onChange={(event) => updateComposerDraft("priority", event.target.value as OpportunityPriority)}>
-                        <option value="A">A</option>
-                        <option value="B">B</option>
-                        <option value="C">C</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>匹配度</span>
-                      <select value={composerDraft.match} onChange={(event) => updateComposerDraft("match", event.target.value as OpportunityMatch)}>
-                        <option value="HIGH">HIGH</option>
-                        <option value="MEDIUM">MEDIUM</option>
-                        <option value="LOW">LOW</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span className="field-label-row">
-                        <span>今日优先级</span>
-                        <span
-                          className="field-tooltip"
-                          tabIndex={0}
-                          data-tooltip="默认会根据状态、截止日、匹配度和主观优先级自动计算；也可以手动选择 P0-P3。"
-                          aria-label="今日优先级说明"
-                        >
-                          ?
-                        </span>
-                      </span>
-                      <select
-                        value={composerDraft.actionManual ? composerDraft.action : "AUTO"}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          if (value === "AUTO") {
-                            updateComposerDraft("actionManual", false);
-                            updateComposerDraft(
-                              "action",
-                              computeOpportunityAction({
-                                status: "TO APPLY",
-                                deadline: composerDraft.deadline,
-                                dueDate: composerDraft.dueDate,
-                                match: composerDraft.match,
-                                priority: composerDraft.priority,
-                              }),
-                            );
-                            return;
-                          }
-                          updateComposerDraft("actionManual", true);
-                          updateComposerDraft("action", value as OpportunityAction);
-                        }}
-                      >
-                        <option value="AUTO">
-                          自动（建议 {computeOpportunityAction({ status: "TO APPLY", deadline: composerDraft.deadline, dueDate: composerDraft.dueDate, match: composerDraft.match, priority: composerDraft.priority })}）
-                        </option>
-                        <option value="P0">P0</option>
-                        <option value="P1">P1</option>
-                        <option value="P2">P2</option>
-                        <option value="P3">P3</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>投递简历</span>
-                      <select value={composerDraft.resumeId} onChange={(event) => updateComposerDraft("resumeId", event.target.value)}>
-                        <option value="">暂不选择简历</option>
-                        {resumeList.map((resume) => (
-                          <option value={resume.id} key={resume.id}>{resume.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>来源</span>
-                      <input value={composerDraft.sourceLabel} onChange={(event) => updateComposerDraft("sourceLabel", event.target.value)} />
-                    </label>
-                    <label className="wide-field opportunity-note-field">
-                      <span>备注</span>
-                      <textarea
-                        value={composerDraft.deadline}
-                        onChange={(event) => updateComposerDraft("deadline", event.target.value)}
-                      />
-                    </label>
-                    <label className="wide-field">
-                      <span>岗位描述 *</span>
-                      <textarea value={composerDraft.sourceText} onChange={(event) => updateComposerDraft("sourceText", event.target.value)} />
-                    </label>
-                  </>
-                )}
-
-                {composer === "interview" && (
-                  <>
-                    <label>
-                      <span>公司 *</span>
-                      <input value={composerDraft.company} onChange={(event) => updateComposerDraft("company", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>岗位 *</span>
-                      <input value={composerDraft.role} onChange={(event) => updateComposerDraft("role", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>轮次 *</span>
-                      <input value={composerDraft.round} onChange={(event) => updateComposerDraft("round", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>日期</span>
-                      <input value={composerDraft.date} onChange={(event) => updateComposerDraft("date", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>关联岗位</span>
-                      <OpportunityCombobox
-                        opportunities={opportunities}
-                        value={composerDraft.linkedOpportunityId}
-                        onChange={(value) => updateComposerDraft("linkedOpportunityId", value)}
-                        emptyLabel="暂不关联"
-                      />
-                    </label>
-                    <label>
-                      <span>复盘优先级</span>
-                      <select
-                        value={composerDraft.reviewPriority}
-                        onChange={(event) => updateComposerDraft("reviewPriority", event.target.value as OpportunityAction)}
-                      >
-                        {reviewPriorityOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="wide-field">
-                      <span>备注</span>
-                      <textarea
-                        value={composerDraft.nextAction}
-                        onChange={(event) => updateComposerDraft("nextAction", event.target.value)}
-                        placeholder="记录这场面试的背景、特殊要求或后续关注点。"
-                      />
-                    </label>
-                    <label className="wide-field">
-                      <span>原文件名</span>
-                      <input value={composerDraft.fileName} onChange={(event) => updateComposerDraft("fileName", event.target.value)} placeholder="recording.m4a 或 transcript.txt" />
-                    </label>
-                    <label className="wide-field">
-                      <span>面试文字稿 / 复盘内容</span>
-                      <textarea value={composerDraft.sourceText} onChange={(event) => updateComposerDraft("sourceText", event.target.value)} />
-                    </label>
-                  </>
-                )}
-
-                {composer === "resume" && (
-                  <>
-                    <label>
-                      <span>版本名称 *</span>
-                      <input value={composerDraft.title} onChange={(event) => updateComposerDraft("title", event.target.value)} />
-                    </label>
-                    <label>
-                      <span>文件名 *</span>
-                      <input value={composerDraft.fileName} onChange={(event) => updateComposerDraft("fileName", event.target.value)} placeholder="resume-v1.pdf" />
-                    </label>
-                    <label className="wide-field">
-                      <span>适合方向</span>
-                      <input value={composerDraft.roles} onChange={(event) => updateComposerDraft("roles", event.target.value)} />
-                    </label>
-                    <label className="wide-field">
-                      <span>核心卖点</span>
-                      <textarea value={composerDraft.points} onChange={(event) => updateComposerDraft("points", event.target.value)} />
-                    </label>
-                    <label className="wide-field">
-                      <span>文件摘要</span>
-                      <textarea value={composerDraft.summary} onChange={(event) => updateComposerDraft("summary", event.target.value)} />
-                    </label>
-                  </>
-                )}
-
-                {composer === "answer" && (
-                  <>
-                    <label className="wide-field">
-                      <span>问题 *</span>
-                      <input value={composerDraft.question} onChange={(event) => updateComposerDraft("question", event.target.value)} />
-                    </label>
-                    <label className="wide-field">
-                      <span>回答框架</span>
-                      <textarea value={composerDraft.framework} onChange={(event) => updateComposerDraft("framework", event.target.value)} />
-                    </label>
-                    <label className="wide-field">
-                      <span>具体回答</span>
-                      <textarea value={composerDraft.answer} onChange={(event) => updateComposerDraft("answer", event.target.value)} />
-                    </label>
-                    <label className="wide-field">
-                      <span>适用岗位</span>
-                      <input value={composerDraft.relatedRoles} onChange={(event) => updateComposerDraft("relatedRoles", event.target.value)} />
-                    </label>
-                  </>
-                )}
-              </div>
-              )}
-
-              {composerParseNotice && (
-                <div className={`composer-parse-notice ${composerParsing ? "is-loading" : "is-error"}`} role="status">
-                  {composerParseNotice}
-                </div>
-              )}
-
-              <div className="button-row">
-                {composerStep === "source" && composer !== "answer" ? (
-                  <button className="primary-button" onClick={runComposerParse} disabled={!canRunSourceParse(composerSource) || composerParsing}>
-                    <Sparkles size={16} />
-                    <span>
-                      {composerParsing
-                        ? "正在处理..."
-                        : canRunSourceParse(composerSource)
-                          ? composer === "interview" && interviewInputMode === "review-json"
-                            ? "导入复盘"
-                            : composer === "interview"
-                              ? "开始整理"
-                              : "开始整理"
-                          : uploadStatusLabel(composerSource)}
-                    </span>
-                  </button>
-                ) : (
-                  <button className="primary-button" onClick={submitComposer}>
-                    <Check size={16} />
-                    <span>创建正式记录</span>
-                  </button>
-                )}
-                {composerStep === "review" && composer !== "answer" && (
-                  <button className="secondary-button" onClick={() => setComposerStep("source")}>返回材料</button>
-                )}
-              </div>
-            </div>
-          </div>
+          <ModuleComposerDialog
+            composer={composer}
+            composerStep={composerStep}
+            composerSource={composerSource}
+            composerDraft={composerDraft}
+            composerParseNotice={composerParseNotice}
+            composerParsing={composerParsing}
+            interviewInputMode={interviewInputMode}
+            interviewReviewJsonPrompt={interviewReviewJsonPrompt}
+            opportunities={opportunities}
+            resumeList={resumeList}
+            onClose={closeComposer}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, closeComposer)}
+            onInterviewInputModeChange={setInterviewInputMode}
+            onSourceChange={(field, value) => {
+              updateComposerSource(field, value);
+              if (composerParseNotice) setComposerParseNotice("");
+            }}
+            onSourcePatch={patchComposerSource}
+            onFileSelected={handleComposerFileSelected}
+            onClearParseNotice={() => setComposerParseNotice("")}
+            onTemplateCopied={() => setSystemMessage("整理模板已复制")}
+            onDraftChange={(field, value) => {
+              updateComposerDraft(field, value);
+              if (composerParseNotice) setComposerParseNotice("");
+            }}
+            onParse={runComposerParse}
+            onSubmit={submitComposer}
+            onBackToSource={() => setComposerStep("source")}
+          />
         )}
 
         {previewAsset && (
-          <div
-            className="asset-preview"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="asset-preview-title"
-            onMouseDown={markModalBackdropPointerStart}
-            onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewAsset(null))}
-          >
-            <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
-              <button className="modal-close-button" onClick={() => setPreviewAsset(null)} aria-label="关闭">
-                <X size={16} />
-              </button>
-              <SectionTitle titleId="asset-preview-title" label={sourceKindLabel[previewAsset.kind]} title={previewAsset.title} action={previewAsset.createdAt} />
-              <p>{previewAsset.detail}</p>
-              <textarea readOnly value={previewAsset.content || "当前原材料只有元信息。若该材料来自文件上传，可以点击下方打开原文件。"} />
-              <div className="button-row">
-                {previewAsset.storageUri && (
-                  <button className="secondary-button" onClick={() => openStoredFile(previewAsset.storageUri)}>打开原文件</button>
-                )}
-                {previewAsset.kind === "job-link" && previewAsset.content?.startsWith("http") && (
-                  <button className="secondary-button" onClick={() => window.open(previewAsset.content, "_blank", "noopener,noreferrer")}>打开链接</button>
-                )}
-              </div>
-            </div>
-          </div>
+          <AssetPreviewDialog
+            asset={previewAsset}
+            onClose={() => setPreviewAsset(null)}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setPreviewAsset(null))}
+            onOpenStoredFile={openStoredFile}
+          />
         )}
 
         {previewSessionFile && (
-          <div
-            className="asset-preview"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="session-file-preview-title"
-            onMouseDown={markModalBackdropPointerStart}
-            onClick={(event) => closeModalFromBackdropClick(event, () => setPreviewSessionFile(null))}
-          >
-            <div className="asset-preview-panel" onClick={(event) => event.stopPropagation()}>
-              <button className="modal-close-button" onClick={() => setPreviewSessionFile(null)} aria-label="关闭">
-                <X size={16} />
-              </button>
-              <SectionTitle
-                titleId="session-file-preview-title"
-                label={previewSessionFile.kind === "audio" ? "原录音" : "文字稿"}
-                title={previewSessionFile.fileName}
-                action={previewSessionFile.uploadedAt}
-              />
-              <p>{previewSessionFile.detail}{previewSessionFile.duration ? ` / ${previewSessionFile.duration}` : ""}</p>
-              <textarea readOnly value={previewSessionFile.content || "当前材料只有文件元信息；如果原文件已存储，可以点击下方打开原文件。"} />
-              <div className="button-row">
-                {previewSessionFile.storageUri && (
-                  <button className="secondary-button" onClick={() => openStoredFile(previewSessionFile.storageUri)}>打开原文件</button>
-                )}
-              </div>
-            </div>
-          </div>
+          <SessionFilePreviewDialog
+            file={previewSessionFile}
+            onClose={() => setPreviewSessionFile(null)}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setPreviewSessionFile(null))}
+            onOpenStoredFile={openStoredFile}
+          />
         )}
 
         {weeklyTaskForm && (
-          <div
-            className="asset-preview weekly-task-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="weekly-task-dialog-title"
-            onMouseDown={markModalBackdropPointerStart}
-            onClick={(event) => closeModalFromBackdropClick(event, () => setWeeklyTaskForm(null))}
-          >
-            <div className="asset-preview-panel weekly-task-form-panel" onClick={(event) => event.stopPropagation()}>
-              <button className="modal-close-button" onClick={() => setWeeklyTaskForm(null)} aria-label="关闭">
-                <X size={16} />
-              </button>
-              <div className="section-title">
-                <span>自主训练</span>
-                <h2 id="weekly-task-dialog-title">添加练习动作</h2>
-              </div>
-              <p>手动写下这周的练习任务，例如笔试、作品集或项目表达。</p>
-              <div className="draft-edit-grid weekly-task-form-grid">
-                <label className="wide-field">
-                  <span>动作标题</span>
-                  <input
-                    autoFocus
-                    value={weeklyTaskForm.title}
-                    onChange={(event) => setWeeklyTaskForm((form) => (form ? { ...form, title: event.target.value } : form))}
-                    placeholder="例如：整理一版项目表达"
-                  />
-                </label>
-                <label className="wide-field">
-                  <span>备注说明</span>
-                  <textarea
-                    value={weeklyTaskForm.detail}
-                    onChange={(event) => setWeeklyTaskForm((form) => (form ? { ...form, detail: event.target.value } : form))}
-                    placeholder="例如：练一道笔试题，或整理一个项目表达。"
-                  />
-                </label>
-                <label>
-                  <span>优先级</span>
-                  <select
-                    value={weeklyTaskForm.level ?? "P2"}
-                    onChange={(event) =>
-                      setWeeklyTaskForm((form) => (form ? { ...form, level: event.target.value as WeeklyTask["level"] } : form))
-                    }
-                  >
-                    <option value="P0">P0</option>
-                    <option value="P1">P1</option>
-                    <option value="P2">P2</option>
-                    <option value="P3">P3</option>
-                  </select>
-                </label>
-              </div>
-              <div className="button-row confirm-actions">
-                <button className="primary-button" onClick={submitWeeklyTaskForm}>
-                  添加动作
-                </button>
-                <button className="secondary-button" onClick={() => setWeeklyTaskForm(null)}>
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
+          <WeeklyTaskDialog
+            form={weeklyTaskForm}
+            onChange={updateWeeklyTaskForm}
+            onSubmit={submitWeeklyTaskForm}
+            onClose={closeWeeklyTaskDialog}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, closeWeeklyTaskDialog)}
+          />
         )}
 
         {confirmDialog && (
-          <div
-            className="asset-preview confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="confirm-dialog-title"
-            onMouseDown={markModalBackdropPointerStart}
-            onClick={(event) => closeModalFromBackdropClick(event, () => setConfirmDialog(null))}
-          >
-            <div className="asset-preview-panel confirm-panel" onClick={(event) => event.stopPropagation()}>
-              <button className="modal-close-button" onClick={() => setConfirmDialog(null)} aria-label="关闭">
-                <X size={16} />
-              </button>
-              <div className="section-title">
-                <span>{confirmDialog.eyebrow ?? "确认删除"}</span>
-                <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
-              </div>
-              <p>{confirmDialog.description}</p>
-              {confirmDialog.contentKind === "end-opportunity" ? (
-                <div className="end-opportunity-form">
-                  <span>结束原因</span>
-                  <div className="end-reason-grid">
-                    {endReasonOptions.map((option) => (
-                      <button
-                        type="button"
-                        key={option.value}
-                        className={endOpportunityDraft.reason === option.value ? "active-filter" : ""}
-                        aria-pressed={endOpportunityDraft.reason === option.value}
-                        onClick={() => updateEndOpportunityDraft({ reason: option.value })}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                  <label>
-                    <span>备注</span>
-                    <textarea
-                      value={endOpportunityDraft.note}
-                      onChange={(event) => updateEndOpportunityDraft({ note: event.target.value })}
-                      placeholder="例如：HR 通知岗位暂停招聘；或自己决定不再继续。"
-                    />
-                  </label>
-                </div>
-              ) : null}
-              <div className="button-row confirm-actions">
-                <button className="secondary-button" onClick={() => setConfirmDialog(null)}>
-                  {confirmDialog.cancelLabel ?? "取消"}
-                </button>
-                <button
-                  className={confirmDialog.confirmTone === "primary" ? "primary-button" : "destructive-button"}
-                  onClick={() => {
-                    confirmDialog.onConfirm();
-                    setConfirmDialog(null);
-                  }}
-                >
-                  {confirmDialog.confirmLabel}
-                </button>
-              </div>
-            </div>
-          </div>
+          <ConfirmDialog
+            dialog={confirmDialog}
+            endOpportunityDraft={endOpportunityDraft}
+            onEndOpportunityDraftChange={updateEndOpportunityDraft}
+            onClose={() => setConfirmDialog(null)}
+            onConfirm={() => {
+              confirmDialog.onConfirm();
+              setConfirmDialog(null);
+            }}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setConfirmDialog(null))}
+          />
         )}
       </main>
     </div>
-  );
-}
-
-function PageIntro({
-  label,
-  title,
-  detail,
-  action,
-  helpTooltip = "",
-  helpLabel = "说明",
-}: {
-  label: string;
-  title: string;
-  detail: string;
-  action: string;
-  helpTooltip?: string;
-  helpLabel?: string;
-}) {
-  return (
-    <div className="page-intro">
-      <div className="section-title">
-        <span>{label}</span>
-        <h2>
-          {title}
-          {helpTooltip ? (
-            <span className="field-tooltip section-title-help" tabIndex={0} data-tooltip={helpTooltip} aria-label={helpLabel}>
-              ?
-            </span>
-          ) : null}
-        </h2>
-        <em>{action}</em>
-      </div>
-      {detail ? <p>{detail}</p> : null}
-    </div>
-  );
-}
-
-function SectionTitle({ label, title, action, titleId }: { label: string; title: string; action: string; titleId?: string }) {
-  return (
-    <div className="section-title">
-      <span>{label}</span>
-      <h2 id={titleId}>{title}</h2>
-      <em>{action}</em>
-    </div>
-  );
-}
-
-function ApiModeBadge({ apiMode, onRefresh }: { apiMode: ApiModeState; onRefresh: () => void }) {
-  const label =
-    apiMode.status === "online"
-      ? "已连接"
-      : apiMode.status === "checking"
-        ? "检查中"
-        : apiMode.status === "offline"
-          ? "未连接"
-          : apiMode.status === "demo"
-            ? "演示模式"
-            : "本机模式";
-  const detail =
-    apiMode.status === "online"
-      ? apiMode.dbPath
-        ? "数据会保存在本机"
-        : "数据服务已可用"
-      : apiMode.status === "offline"
-        ? "当前使用浏览器数据"
-        : apiMode.status === "demo"
-          ? "当前是演示数据"
-          : apiMode.status === "mock"
-            ? "数据保存在浏览器中"
-            : "正在检查保存方式";
-
-  return (
-    <div className={`api-mode-badge ${apiMode.status}`} title={apiMode.dbPath || apiBaseUrl}>
-      <div>
-        <strong>{label}</strong>
-        <span>{detail}</span>
-      </div>
-      {apiMode.checkedAt && <em>{apiMode.checkedAt}</em>}
-      <button className="mini-button" onClick={onRefresh} disabled={apiMode.status === "checking"}>
-        刷新
-      </button>
-    </div>
-  );
-}
-
-function StatRow({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="stat-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ReviewBlock({
-  label,
-  value,
-  readOnly,
-  compact,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  readOnly?: boolean;
-  compact?: boolean;
-  onChange?: (value: string) => void;
-}) {
-  return (
-    <label className={`review-block${compact ? " compact-review-block" : ""}`}>
-      <span>{label}</span>
-      <textarea readOnly={readOnly} value={value} onChange={(event) => onChange?.(event.target.value)} />
-    </label>
-  );
-}
-
-function WeeklyTagEditor({
-  label,
-  values,
-  onAdd,
-  onUse,
-}: {
-  label: string;
-  values: string[];
-  onAdd: (value: string) => void;
-  onUse: (label: string, value: string) => void;
-}) {
-  const [draft, setDraft] = useState("");
-
-  return (
-    <div className="weekly-tags">
-      <span>{label}</span>
-      <div className="focus-grid">
-        {values.map((item) => (
-          <button key={item} onClick={() => onUse(label, item)}>{item}</button>
-        ))}
-      </div>
-      <div className="tag-input-row">
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`添加${label}`} />
-        <button
-          className="secondary-button compact-button"
-          onClick={() => {
-            onAdd(draft);
-            setDraft("");
-          }}
-        >
-          添加
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ListPager({
-  page,
-  pageCount,
-  onPageChange,
-  alwaysShow = false,
-  className = "",
-  label = "列表",
-}: {
-  page: number;
-  pageCount: number;
-  onPageChange: (nextPage: number) => void;
-  alwaysShow?: boolean;
-  className?: string;
-  label?: string;
-}) {
-  if (!alwaysShow && pageCount <= 1) return null;
-
-  return (
-    <div className={`pager-row ${className}`.trim()} aria-label={`${label}分页`}>
-      <button
-        type="button"
-        className="ghost-button compact-button"
-        disabled={page === 0}
-        aria-label={`${label}上一页`}
-        onClick={() => onPageChange(Math.max(0, page - 1))}
-      >
-        上一页
-      </button>
-      <span>
-        {page + 1} / {pageCount}
-      </span>
-      <button
-        type="button"
-        className="ghost-button compact-button"
-        disabled={page >= pageCount - 1}
-        aria-label={`${label}下一页`}
-        onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}
-      >
-        下一页
-      </button>
-    </div>
-  );
-}
-
-function StatusPill({ status }: { status: Opportunity["status"] }) {
-  return <span className={`status-pill ${status.toLowerCase().replace(/\s/g, "-")}`}>{statusLabel[status]}</span>;
-}
-
-
-function SegmentedProgress({ value, segments }: { value: number; segments: number }) {
-  const filled = Math.round((value / 100) * segments);
-  return (
-    <div className="segmented-progress" aria-label={`${value}%`} style={{ "--segments": segments } as CSSProperties}>
-      {Array.from({ length: segments }, (_, index) => (
-        <span key={index} className={index < filled ? "filled" : ""} />
-      ))}
-    </div>
-  );
-}
-
-function EmptyState({ title, detail, className = "" }: { title: string; detail: string; className?: string }) {
-  return (
-    <div className={`empty-state ${className}`.trim()}>
-      <h3>{title}</h3>
-      <p>{detail}</p>
-    </div>
-  );
-}
-
-function BoardView({
-  opportunities,
-  scope,
-  openOpportunity,
-}: {
-  opportunities: Opportunity[];
-  scope: OpportunityVisibilityFilter;
-  openOpportunity: (id: string) => void;
-}) {
-  const [columnPages, setColumnPages] = useState<Partial<Record<OpportunityStatus, number>>>({});
-  const boardStatuses = useMemo<OpportunityStatus[]>(
-    () =>
-      scope === "ENDED"
-        ? ["ENDED"]
-        : scope === "ALL"
-          ? [...activeOpportunityBoardStatuses, "ENDED"]
-          : activeOpportunityBoardStatuses,
-    [scope],
-  );
-  const columnStateKey = useMemo(() => opportunities.map((item) => `${item.status}:${item.id}`).join("|"), [opportunities]);
-
-  useEffect(() => {
-    setColumnPages({});
-  }, [scope, columnStateKey]);
-
-  const setColumnPage = (status: OpportunityStatus, nextPage: number) => {
-    setColumnPages((current) => ({ ...current, [status]: nextPage }));
-  };
-
-  return (
-    <section className="board board-embedded" style={{ "--board-column-count": Math.max(boardStatuses.length, 1) } as CSSProperties}>
-      {boardStatuses.map((status) => {
-        const columnOpportunities = opportunities.filter((item) => item.status === status);
-        const columnPage = columnPages[status] ?? 0;
-        const columnList = paginateList(columnOpportunities, columnPage, OPPORTUNITY_BOARD_COLUMN_PAGE_SIZE);
-        const isEndedColumn = status === "ENDED";
-
-        return (
-          <div className={`board-column ${isEndedColumn ? "board-column-ended" : ""}`} key={status}>
-            <SectionTitle label="看板分组" title={statusLabel[status]} action={`${columnOpportunities.length}`} />
-            {columnList.visible.map((item) => (
-              <button className={`job-card job-card-button board-job-card ${isEndedColumn ? "job-card-ended" : ""}`} key={item.id} onClick={() => openOpportunity(item.id)}>
-                <span className={`priority ${resolveOpportunityAction(item).toLowerCase()}`}>{resolveOpportunityAction(item)}</span>
-                <h3>{item.title}</h3>
-                <p>{item.company}</p>
-              </button>
-            ))}
-            {columnOpportunities.length === 0 && <p className="board-column-empty">暂无岗位</p>}
-            {columnList.pageCount > 1 && (
-              <div className="board-column-pager" aria-label={`${statusLabel[status]}分页`}>
-                <button
-                  type="button"
-                  aria-label={`${statusLabel[status]}上一页`}
-                  disabled={columnList.safePage === 0}
-                  onClick={() => setColumnPage(status, Math.max(0, columnList.safePage - 1))}
-                >
-                  <ChevronLeft size={13} aria-hidden="true" />
-                </button>
-                <span>
-                  {columnList.safePage + 1} / {columnList.pageCount}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`${statusLabel[status]}下一页`}
-                  disabled={columnList.safePage >= columnList.pageCount - 1}
-                  onClick={() => setColumnPage(status, Math.min(columnList.pageCount - 1, columnList.safePage + 1))}
-                >
-                  <ChevronRight size={13} aria-hidden="true" />
-                </button>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </section>
-  );
-}
-
-function ExportAction({
-  icon: Icon,
-  title,
-  detail,
-  onClick,
-}: {
-  icon: typeof Archive;
-  title: string;
-  detail: string;
-  onClick: () => void;
-}) {
-  return (
-    <button className="export-action" onClick={onClick}>
-      <Icon size={20} />
-      <span>
-        <strong>{title}</strong>
-        <small>{detail}</small>
-      </span>
-      <Send size={16} />
-    </button>
   );
 }
 
