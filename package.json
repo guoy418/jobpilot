@@ -19,7 +19,8 @@
     "mvp:check": "node tools/mvp_check.cjs",
     "audit:v07": "node tools/v07_webapp_audit.cjs",
     "audit:v07.2": "node tools/v07_2_acceptance_audit.cjs",
-    "audit": "npm run audit:v07 && npm run audit:v07.2"
+    "audit": "npm run audit:v07 && npm run audit:v07.2",
+    "test": "vitest run"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
@@ -34,6 +35,7 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "playwright-core": "^1.60.0"
+    "playwright-core": "^1.60.0",
+    "vitest": "^4.1.9"
   }
 }
