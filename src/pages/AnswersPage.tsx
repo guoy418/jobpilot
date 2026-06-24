@@ -289,18 +289,20 @@ export function AnswersPage({
               detail="答案卡可以手动添加，也可以从面试复盘生成；可随机抽练，或加入本周计划形成练习行动。"
               action={`${filteredAnswerCards.length}/${selectedAnswerCategoryTotal} 张卡片`}
             />
-            <div className="button-row tight-row">
-              <button className="primary-button" onClick={onOpenComposer}>
-                <Plus size={16} />
-                <span>新增答案卡</span>
-              </button>
+            <div className="answer-action-row">
+              <div className="answer-creation-actions" aria-label="创建答案卡">
+                <button className="primary-button" onClick={onOpenComposer}>
+                  <Plus size={16} />
+                  <span>新增答案卡</span>
+                </button>
+                <button className="secondary-button" onClick={onGoToInterviews}>
+                  <FileAudio size={16} />
+                  <span>从复盘生成</span>
+                </button>
+              </div>
               <button className="secondary-button answer-random-button" onClick={onStartRandomPractice} disabled={randomPracticeSpinning || filteredAnswerCards.length === 0}>
                 <Sparkles size={16} />
                 <span>{randomPracticeSpinning ? "抽取中..." : "随机抽练"}</span>
-              </button>
-              <button className="secondary-button" onClick={onGoToInterviews}>
-                <FileAudio size={16} />
-                <span>从复盘生成</span>
               </button>
             </div>
           </div>

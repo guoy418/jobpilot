@@ -297,10 +297,42 @@ describe("today action selector guardrails", () => {
 
     const answerAction = actions.find((action) => action.taskId === "task-answer");
     expect(answerAction).toMatchObject({
+      level: "P0",
       page: "answers",
       targetId: "answer-1",
       source: "weekly",
       why: "这张答案卡已被加入本周计划，所以进入今日行动。",
     });
+  });
+
+  it("reflects updated weekly task priority in today actions", () => {
+    const makeActionsForLevel = (level: WeeklyTask["level"]) =>
+      selectTodayActions(
+        [],
+        [],
+        [],
+        makeWeeklyPlan({
+          tasks: [
+            makeWeeklyTask({
+              id: "task-priority-sync",
+              title: "练习答案优先级",
+              source: "answer",
+              sourceLabel: "答案库",
+              relatedEntityId: "answer-sync",
+              level,
+            }),
+          ],
+        }),
+        resumeList,
+      );
+
+    expect(makeActionsForLevel("P3")[0]).toMatchObject({
+      level: "P3",
+      taskId: "task-priority-sync",
+      targetId: "answer-sync",
+      page: "answers",
+    });
+    expect(makeActionsForLevel("P0")[0].level).toBe("P0");
+    expect(makeActionsForLevel(undefined)[0].level).toBe("P2");
   });
 });

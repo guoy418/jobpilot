@@ -42,6 +42,7 @@ import { AssetPreviewDialog, SessionFilePreviewDialog } from "./components/Previ
 import { SettingsPage } from "./components/SettingsPage";
 import { WeeklyPage } from "./components/WeeklyPage";
 import { WeeklyTaskDialog } from "./components/WeeklyTaskDialog";
+import { WeeklyTaskPriorityDialog } from "./components/WeeklyTaskPriorityDialog";
 import { useAiSettings, type AiSettings } from "./hooks/useAiSettings";
 import { useAnswerPracticeController } from "./hooks/useAnswerPracticeController";
 import { useApiInsights } from "./hooks/useApiInsights";
@@ -222,6 +223,7 @@ const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根
 type OpportunityVisibilityFilter = "ACTIVE" | "ENDED" | "ALL";
 type OpportunityPriorityFilter = "ALL" | OpportunityAction;
 type OpportunityTagFilter = "HIGH_PRIORITY" | "HIGH_MATCH" | "DUE_SOON";
+type PendingWeeklyPracticeTask = Omit<WeeklyTask, "id" | "status"> & { level: OpportunityAction };
 
 const allAnswerCategoryId = "all";
 
@@ -393,6 +395,7 @@ function App() {
   const [previewAsset, setPreviewAsset] = useState<SourceAsset | null>(null);
   const [previewSessionFile, setPreviewSessionFile] = useState<SessionFile | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [weeklyPriorityTask, setWeeklyPriorityTask] = useState<PendingWeeklyPracticeTask | null>(null);
   const [endOpportunityDraft, setEndOpportunityDraft] = useState<EndOpportunityDraft>(() => emptyEndOpportunityDraft());
   const [interviewReparseBusy, setInterviewReparseBusy] = useState(false);
   const [interviewReparseNotice, setInterviewReparseNotice] = useState("");
@@ -544,6 +547,7 @@ function App() {
     source: TodayAction["source"];
     label: string;
     detail: string;
+    page: Page;
     icon: typeof BriefcaseBusiness;
     actions: TodayAction[];
   }> = [
@@ -551,6 +555,7 @@ function App() {
       source: "opportunity",
       label: "岗位推进",
       detail: "待投递、笔试、面试等岗位推进任务",
+      page: "opportunities",
       icon: BriefcaseBusiness,
       actions: todayActions.filter((action) => action.source === "opportunity"),
     },
@@ -558,6 +563,7 @@ function App() {
       source: "interview",
       label: "面试复盘",
       detail: "需要整理和补强的面试复盘",
+      page: "interviews",
       icon: FileAudio,
       actions: todayActions.filter((action) => action.source === "interview"),
     },
@@ -565,6 +571,7 @@ function App() {
       source: "weekly",
       label: "训练计划",
       detail: "本周计划里的自定义任务和答案卡练习",
+      page: "weekly",
       icon: CalendarClock,
       actions: todayActions.filter((action) => action.source === "weekly"),
     },
@@ -1293,20 +1300,21 @@ function App() {
   };
 
   useEffect(() => {
-    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !composer) return;
+    if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !weeklyPriorityTask && !composer) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
       else if (composer) closeComposer();
+      else if (weeklyPriorityTask) setWeeklyPriorityTask(null);
       else if (weeklyTaskForm) closeWeeklyTaskDialog();
       else if (previewAsset) setPreviewAsset(null);
       else if (previewSessionFile) setPreviewSessionFile(null);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [composer, confirmDialog, previewAsset, previewSessionFile, weeklyTaskForm]);
+  }, [composer, confirmDialog, previewAsset, previewSessionFile, weeklyPriorityTask, weeklyTaskForm]);
 
-  const modalOpen = Boolean(confirmDialog || previewAsset || previewSessionFile || weeklyTaskForm || composer);
+  const modalOpen = Boolean(confirmDialog || previewAsset || previewSessionFile || weeklyTaskForm || weeklyPriorityTask || composer);
   useEffect(() => {
     if (!modalOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -1879,6 +1887,17 @@ function App() {
     setSystemMessage("面试复盘已导出");
   };
 
+  const requestWeeklyPriorityTask = (task: Omit<WeeklyTask, "id" | "status"> & { level?: OpportunityAction }) => {
+    setWeeklyPriorityTask({ ...task, level: task.level ?? "P2" });
+  };
+
+  const confirmWeeklyPriorityTask = () => {
+    if (!weeklyPriorityTask) return;
+    createWeeklyTask(weeklyPriorityTask);
+    setWeeklyPriorityTask(null);
+    setPage("weekly");
+  };
+
   const addSelectedAnswerToPractice = () => {
     const existingTask = weeklyPlan.tasks.find((task) => task.source === "answer" && task.relatedEntityId === selectedAnswer.id && task.status === "open");
     if (existingTask) {
@@ -1887,7 +1906,7 @@ function App() {
       return;
     }
 
-    createWeeklyTask({
+    requestWeeklyPriorityTask({
       title: `练习答案：${selectedAnswer.question}`,
       detail: `来自答案库，按「${selectedAnswer.framework}」练到可以自然复述。`,
       source: "answer",
@@ -1895,7 +1914,6 @@ function App() {
       relatedEntityId: selectedAnswer.id,
       level: "P2",
     });
-    setPage("weekly");
   };
 
   const promoteFocusToTask = (label: string, value: string) => {
@@ -2508,7 +2526,7 @@ function App() {
   };
 
   const addSelectedQaToPractice = () => {
-    createWeeklyTask({
+    requestWeeklyPriorityTask({
       title: `练习：${selectedQa.question}`,
       detail: `来自${selectedInterview.company} / ${selectedInterview.round}，按推荐框架重写并练习表达。`,
       source: "interview",
@@ -2516,7 +2534,6 @@ function App() {
       relatedEntityId: selectedInterview.id,
       level: "P2",
     });
-    setPage("weekly");
   };
 
   const createAnswerCard = () => {
@@ -2834,8 +2851,17 @@ function App() {
                           className={`today-source-group today-source-${group.source}`}
                           key={group.source}
                           aria-labelledby={`today-source-${group.source}-title`}
+                          onClick={() => goTo(group.page)}
                         >
-                          <div className="today-source-summary">
+                          <button
+                            type="button"
+                            className="today-source-summary"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              goTo(group.page);
+                            }}
+                            aria-label={`查看${group.label}`}
+                          >
                             <span className="today-source-summary-copy">
                               <span className="today-action-icon today-source-icon" aria-hidden="true">
                                 <GroupIcon size={16} />
@@ -2846,11 +2872,14 @@ function App() {
                                 <small>{group.detail}</small>
                               </span>
                             </span>
-                            <span className="today-source-count">{group.actions.length} 条行动</span>
-                          </div>
+                            <span className="today-source-count">
+                              <span>{group.actions.length} 条行动</span>
+                              <ChevronRight size={13} aria-hidden="true" />
+                            </span>
+                          </button>
                           {group.actions.length > 0 ? (
                             <>
-                              <div className="action-list today-secondary-list today-source-action-list" id={sourceActionsId}>
+                              <div className="action-list today-secondary-list today-source-action-list" id={sourceActionsId} onClick={(event) => event.stopPropagation()}>
                                 {visibleSourceActions.map((action) => (
                                   <div className="action-row" key={todayActionKey(action)}>
                                     <button className="action-row-main" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
@@ -2892,7 +2921,10 @@ function App() {
                                   className="ghost-button today-source-expand"
                                   aria-expanded={isSourceExpanded}
                                   aria-controls={sourceActionsId}
-                                  onClick={() => toggleTodaySource(group.source)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleTodaySource(group.source);
+                                  }}
                                 >
                                   {isSourceExpanded ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
                                   <span>{isSourceExpanded ? "收起更多行动" : `展开剩余 ${remainingSourceActionCount} 条`}</span>
@@ -3562,7 +3594,9 @@ function App() {
             onInterviewPageChange={setWeeklyInterviewPage}
             onPracticePageChange={setWeeklyPracticePage}
             onAddPracticeTask={openWeeklyTaskDialog}
+            onGoToAnswers={() => goTo("answers")}
             onToggleTaskStatus={(task) => updateWeeklyTask(task.id, "status", task.status === "done" ? "open" : "done")}
+            onUpdateTaskLevel={(task, level) => updateWeeklyTask(task.id, "level", level)}
             onDeleteTaskRequest={(task) =>
               requestConfirm({
                 title: "删除这条动作？",
@@ -3654,6 +3688,17 @@ function App() {
             onClose={closeWeeklyTaskDialog}
             onBackdropMouseDown={markModalBackdropPointerStart}
             onBackdropClick={(event) => closeModalFromBackdropClick(event, closeWeeklyTaskDialog)}
+          />
+        )}
+
+        {weeklyPriorityTask && (
+          <WeeklyTaskPriorityDialog
+            task={weeklyPriorityTask}
+            onLevelChange={(level) => setWeeklyPriorityTask((task) => (task ? { ...task, level } : task))}
+            onConfirm={confirmWeeklyPriorityTask}
+            onClose={() => setWeeklyPriorityTask(null)}
+            onBackdropMouseDown={markModalBackdropPointerStart}
+            onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setWeeklyPriorityTask(null))}
           />
         )}
 

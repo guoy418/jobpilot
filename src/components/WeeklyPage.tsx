@@ -1,5 +1,5 @@
-import { Plus } from "lucide-react";
-import type { WeeklyTask } from "../types";
+import { Library, Plus } from "lucide-react";
+import type { OpportunityAction, WeeklyTask } from "../types";
 import { paginateWeeklyGroupTasks } from "../utils/pagination";
 import { ListPager, PageIntro, SegmentedProgress } from "./AppPrimitives";
 
@@ -24,7 +24,9 @@ export function WeeklyPage({
   onInterviewPageChange,
   onPracticePageChange,
   onAddPracticeTask,
+  onGoToAnswers,
   onToggleTaskStatus,
+  onUpdateTaskLevel,
   onDeleteTaskRequest,
 }: {
   groups: WeeklyTaskGroup[];
@@ -39,7 +41,9 @@ export function WeeklyPage({
   onInterviewPageChange: (page: number) => void;
   onPracticePageChange: (page: number) => void;
   onAddPracticeTask: () => void;
+  onGoToAnswers: () => void;
   onToggleTaskStatus: (task: WeeklyTask) => void;
+  onUpdateTaskLevel: (task: WeeklyTask, level: OpportunityAction) => void;
   onDeleteTaskRequest: (task: WeeklyTask) => void;
 }) {
   return (
@@ -71,13 +75,12 @@ export function WeeklyPage({
         <div className="paginated-pane-body">
           <div className="weekly-group-list weekly-groups-page">
             {groups.map((group) => {
-              if (group.id === "interview" && !group.tasks.length) return null;
-
               const page = group.id === "interview" ? interviewPage : practicePage;
               const setPage = group.id === "interview" ? onInterviewPageChange : onPracticePageChange;
               const taskList = paginateWeeklyGroupTasks(group.tasks, page, group.id);
               const visibleTasks = taskList.visible;
               const showAddCard = group.id === "practice" && taskList.safePage === 0;
+              const showAnswerPracticeEmpty = group.id === "interview" && group.tasks.length === 0;
 
               return (
                 <section className="weekly-task-group" key={group.id}>
@@ -101,13 +104,35 @@ export function WeeklyPage({
                         <span>新增一张自主训练卡片</span>
                       </button>
                     ) : null}
+                    {showAnswerPracticeEmpty ? (
+                      <div className="weekly-empty-card weekly-answer-empty-card">
+                        <Library size={18} />
+                        <strong>还没有答案卡练习</strong>
+                        <button className="secondary-button compact-button" onClick={onGoToAnswers}>
+                          去答案库添加
+                        </button>
+                      </div>
+                    ) : null}
                     {group.id === "practice" && group.tasks.length === 0 ? (
                       <p className="empty-list-note weekly-empty-note">还没有自主训练动作，可以先添加笔试、作品集或项目表达练习。</p>
                     ) : null}
                     {visibleTasks.map((task) => (
                       <article className={`weekly-task ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
                         <div className="weekly-task-header">
-                          <span>{task.status === "done" ? "已完成" : task.level ?? "P2"}</span>
+                          <label className="weekly-priority-select-label">
+                            <span className="visually-hidden">优先级</span>
+                            <select
+                              className={`weekly-priority-select priority ${(task.level ?? "P2").toLowerCase()}`}
+                              value={task.level ?? "P2"}
+                              onChange={(event) => onUpdateTaskLevel(task, event.target.value as OpportunityAction)}
+                              aria-label={`调整「${task.title}」优先级`}
+                            >
+                              <option value="P0">P0</option>
+                              <option value="P1">P1</option>
+                              <option value="P2">P2</option>
+                              <option value="P3">P3</option>
+                            </select>
+                          </label>
                           <small>{task.sourceLabel}</small>
                         </div>
                         <h3>{task.title}</h3>

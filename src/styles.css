@@ -1012,6 +1012,7 @@ button:focus-visible {
     linear-gradient(135deg, color-mix(in srgb, var(--surface-raised) 86%, var(--surface)), color-mix(in srgb, var(--surface) 72%, transparent)),
     var(--surface-raised);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-display) 5%, transparent);
+  cursor: pointer;
 }
 
 .today-source-group::before {
@@ -1056,12 +1057,18 @@ button:focus-visible {
 }
 
 .today-source-summary {
+  width: 100%;
+  border: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: start;
   padding: 16px 18px 14px 24px;
-  cursor: default;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   list-style: none;
 }
 
@@ -1129,6 +1136,7 @@ button:focus-visible {
   min-height: 26px;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 10px;
@@ -1139,14 +1147,14 @@ button:focus-visible {
   white-space: nowrap;
 }
 
-.today-source-summary > svg {
+.today-source-count svg {
   color: var(--text-muted);
-  transition: transform 160ms ease-out;
+  transition: transform 160ms ease-out, color 160ms ease-out;
 }
 
 .today-source-summary:hover,
 .today-source-summary:focus-visible {
-  background: transparent;
+  background: color-mix(in srgb, var(--text-display) 3%, transparent);
 }
 
 .today-source-summary:focus-visible {
@@ -1154,14 +1162,17 @@ button:focus-visible {
   outline-offset: -2px;
 }
 
-.today-source-group[open] .today-source-summary > svg {
-  transform: rotate(180deg);
+.today-source-summary:hover .today-source-count svg,
+.today-source-summary:focus-visible .today-source-count svg {
+  color: var(--text-display);
+  transform: translateX(2px);
 }
 
 .today-source-action-list {
   margin: 0 18px 0 24px;
   padding: 2px 0;
   border-top: 1px solid color-mix(in srgb, var(--border-visible) 68%, transparent);
+  cursor: default;
 }
 
 .today-source-action-list .action-row {
@@ -3436,6 +3447,28 @@ small {
   margin-top: 18px;
 }
 
+.answer-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 28px;
+}
+
+.answer-creation-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 76%, transparent);
+}
+
+.answer-action-row .answer-random-button {
+  margin-left: auto;
+}
+
 .answer-random-button:disabled {
   opacity: 0.55;
   cursor: wait;
@@ -3578,11 +3611,44 @@ small {
   padding: 36px 16px;
 }
 
-.weekly-empty-note {
+.weekly-empty-note,
+.weekly-empty-card {
   align-self: stretch;
   min-height: 164px;
   display: grid;
   align-content: center;
+}
+
+.weekly-empty-card {
+  gap: 9px;
+  padding: 18px;
+  border: 1px dashed color-mix(in srgb, var(--border-visible) 72%, transparent);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 10% 12%, color-mix(in srgb, var(--interactive) 7%, transparent), transparent 38%),
+    color-mix(in srgb, var(--surface-raised) 64%, transparent);
+  color: var(--text-primary);
+}
+
+.weekly-empty-card svg {
+  color: var(--text-secondary);
+}
+
+.weekly-empty-card strong {
+  color: var(--text-display);
+  font-weight: 500;
+}
+
+.weekly-empty-card span {
+  max-width: 32ch;
+  color: var(--text-secondary);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+
+.weekly-empty-card .compact-button {
+  width: fit-content;
+  margin-top: 4px;
 }
 
 .answer-card {
@@ -4126,6 +4192,10 @@ small {
   font-size: var(--fs-meta);
 }
 
+.weekly-priority-select-label {
+  flex: 0 0 auto;
+}
+
 .weekly-task-header > span {
   min-width: 52px;
   padding: 6px 10px;
@@ -4140,6 +4210,38 @@ small {
 
 .weekly-task-header select {
   max-width: 160px;
+}
+
+.weekly-task-header .weekly-priority-select {
+  min-width: 66px;
+  min-height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background-color: var(--surface);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.weekly-priority-select.p0 {
+  border-color: color-mix(in srgb, var(--priority-p0) 34%, var(--border));
+  background-color: var(--priority-p0-bg);
+}
+
+.weekly-priority-select.p1 {
+  border-color: color-mix(in srgb, var(--priority-p1) 34%, var(--border));
+  background-color: var(--priority-p1-bg);
+}
+
+.weekly-priority-select.p2 {
+  border-color: color-mix(in srgb, var(--priority-p2) 34%, var(--border));
+  background-color: var(--priority-p2-bg);
+}
+
+.weekly-priority-select.p3 {
+  border-color: color-mix(in srgb, var(--priority-p3) 34%, var(--border));
+  background-color: var(--priority-p3-bg);
 }
 
 .weekly-task input {
@@ -4747,6 +4849,67 @@ small {
 
 .weekly-task-form-panel {
   width: min(560px, 100%);
+}
+
+.weekly-priority-panel {
+  width: min(500px, 100%);
+}
+
+.weekly-priority-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-raised) 74%, transparent);
+}
+
+.weekly-priority-preview strong {
+  color: var(--text-display);
+  line-height: 1.35;
+}
+
+.weekly-priority-preview p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.weekly-priority-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.weekly-priority-options button {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 10px;
+  border: 1px solid var(--button-secondary-border);
+  border-radius: 12px;
+  background: var(--button-ghost-bg);
+  color: var(--button-ghost-text);
+  text-align: left;
+}
+
+.weekly-priority-options button.active-filter {
+  border-color: var(--button-active-border);
+  background: var(--button-active-bg);
+  color: var(--button-active-text);
+}
+
+.weekly-priority-options span {
+  font-family: "Space Mono", monospace;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.weekly-priority-options small {
+  margin: 0;
+  font-size: var(--fs-label);
 }
 
 .weekly-task-form-grid textarea {
