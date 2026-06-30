@@ -1,11 +1,18 @@
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import type { TodayAction } from "../selectors";
 import type { TodayActionHistoryItem, TodayActionHistorySource, TodayActionHistoryStatus, TodayCreatedRecordKind } from "../types";
 import { localDateKey } from "../utils/date";
 import {
-  getTodayActionHistoryForDate,
+  buildTodayActionHistoryMonthCells,
+  createTodayActionHistoryCalendarState,
+  formatDaySummaryLabel,
+  formatTodayActionHistoryDateTitle,
+  getVisibleHistoryItemsForDate,
+  isFutureTodayActionHistoryDateKey,
   isTodayActionHistoryActionItem,
   isTodayCreatedRecordHistoryItem,
+  normalizeTodayActionHistory,
   summarizeTodayActionHistoryDate,
 } from "../utils/todayActionHistory";
 
@@ -33,14 +40,6 @@ const statusLabel: Record<TodayActionHistoryStatus, string> = {
 
 const weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"];
 
-const parseDateKey = (dateKey: string) => {
-  const [year = "0", month = "1", day = "1"] = dateKey.split("-");
-  return new Date(Number(year), Number(month) - 1, Number(day));
-};
-
-const formatDateTitle = (dateKey: string) =>
-  new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(parseDateKey(dateKey));
-
 const formatTimestamp = (value?: string) => {
   if (!value) return "";
   const date = new Date(value);
@@ -48,54 +47,68 @@ const formatTimestamp = (value?: string) => {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
 };
 
-const buildMonthCells = (monthDate: Date) => {
-  const year = monthDate.getFullYear();
-  const month = monthDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const mondayOffset = (firstDay.getDay() + 6) % 7;
-  const startDate = new Date(year, month, 1 - mondayOffset);
+const formatHistoryOverviewLabel = (summary: ReturnType<typeof summarizeTodayActionHistoryDate>) => {
+  const parts: string[] = [];
+  if (summary.actionTotal > 0) parts.push(`${summary.actionTotal} 个行动`);
+  if (summary.created > 0) parts.push(`${summary.created} 新建`);
+  return parts.length ? parts.join(" · ") : "暂无记录";
+};
 
-  return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(startDate);
-    date.setDate(startDate.getDate() + index);
-    return {
-      dateKey: localDateKey(date),
-      day: date.getDate(),
-      isCurrentMonth: date.getMonth() === month,
-    };
-  });
+const formatDaySummaryAriaLabel = (summary: ReturnType<typeof summarizeTodayActionHistoryDate>) => {
+  const parts: string[] = [];
+  if (summary.actionTotal > 0) parts.push(`${summary.actionTotal} 个行动提醒`);
+  if (summary.created > 0) parts.push(`${summary.created} 条新建记录`);
+  return parts.length ? parts.join("，") : "无行动提醒或新建记录";
 };
 
 export function TodayActionHistoryDialog({
   historyItems,
+  todayActions,
   onClose,
   onBackdropMouseDown,
   onBackdropClick,
 }: {
   historyItems: TodayActionHistoryItem[];
+  todayActions: TodayAction[];
   onClose: () => void;
   onBackdropMouseDown: BackdropHandler;
   onBackdropClick: BackdropHandler;
 }) {
-  const newestDate = useMemo(() => [...new Set(historyItems.map((item) => item.date))].sort().at(-1) ?? localDateKey(), [historyItems]);
-  const [selectedDate, setSelectedDate] = useState(newestDate);
-  const [visibleMonth, setVisibleMonth] = useState(() => parseDateKey(newestDate));
+  const todayKey = localDateKey();
+  const initialCalendarState = useMemo(() => createTodayActionHistoryCalendarState(todayKey), [todayKey]);
+  const [selectedDate, setSelectedDate] = useState(initialCalendarState.selectedDate);
+  const [visibleMonth, setVisibleMonth] = useState(initialCalendarState.visibleMonth);
+  const safeSelectedDate = selectedDate > todayKey ? todayKey : selectedDate;
+  const visibleHistoryItems = useMemo(
+    () => normalizeTodayActionHistory(historyItems, todayKey),
+    [historyItems, todayKey],
+  );
+  const visibleCalendarItems = useMemo(() => {
+    const currentTodayItems = getVisibleHistoryItemsForDate(visibleHistoryItems, todayKey, todayKey, todayActions).filter(isTodayActionHistoryActionItem);
+    return [
+      ...visibleHistoryItems.filter((item) => !(isTodayActionHistoryActionItem(item) && item.date === todayKey)),
+      ...currentTodayItems,
+    ];
+  }, [visibleHistoryItems, todayActions, todayKey]);
   const itemsByDate = useMemo(() => {
     const grouped = new Map<string, TodayActionHistoryItem[]>();
-    historyItems.forEach((item) => grouped.set(item.date, [...(grouped.get(item.date) ?? []), item]));
+    visibleCalendarItems.forEach((item) => grouped.set(item.date, [...(grouped.get(item.date) ?? []), item]));
     return grouped;
-  }, [historyItems]);
-  const monthCells = useMemo(() => buildMonthCells(visibleMonth), [visibleMonth]);
-  const selectedItems = useMemo(() => getTodayActionHistoryForDate(historyItems, selectedDate), [historyItems, selectedDate]);
+  }, [visibleCalendarItems]);
+  const monthCells = useMemo(() => buildTodayActionHistoryMonthCells(visibleMonth), [visibleMonth]);
+  const selectedItems = useMemo(
+    () => getVisibleHistoryItemsForDate(visibleHistoryItems, safeSelectedDate, todayKey, todayActions),
+    [visibleHistoryItems, safeSelectedDate, todayActions, todayKey],
+  );
   const selectedActionItems = selectedItems.filter(isTodayActionHistoryActionItem);
   const selectedCreatedItems = selectedItems.filter(isTodayCreatedRecordHistoryItem);
   const selectedSummary = summarizeTodayActionHistoryDate(selectedItems);
+  const visibleSummary = summarizeTodayActionHistoryDate(visibleCalendarItems);
+  const isSelectedToday = safeSelectedDate === todayKey;
 
   useEffect(() => {
-    if (itemsByDate.has(selectedDate)) return;
-    setSelectedDate(newestDate);
-    setVisibleMonth(parseDateKey(newestDate));
-  }, [itemsByDate, newestDate, selectedDate]);
+    if (selectedDate > todayKey) setSelectedDate(todayKey);
+  }, [selectedDate, todayKey]);
 
   const moveMonth = (offset: number) => {
     setVisibleMonth((date) => new Date(date.getFullYear(), date.getMonth() + offset, 1));
@@ -116,7 +129,7 @@ export function TodayActionHistoryDialog({
         </button>
         <div className="section-title">
           <h2 id="today-history-title">行动历史回顾</h2>
-          <em>{`${historyItems.length} 条记录`}</em>
+          <em>{formatHistoryOverviewLabel(visibleSummary)}</em>
         </div>
 
         <div className="today-history-layout">
@@ -137,61 +150,62 @@ export function TodayActionHistoryDialog({
             </div>
             <div className="today-history-grid">
               {monthCells.map((cell) => {
-                const dateItems = itemsByDate.get(cell.dateKey) ?? [];
+                const isFuture = isFutureTodayActionHistoryDateKey(cell.dateKey, todayKey);
+                const dateItems = isFuture ? [] : (itemsByDate.get(cell.dateKey) ?? []);
                 const summary = summarizeTodayActionHistoryDate(dateItems);
-                const isSelected = cell.dateKey === selectedDate;
+                const summaryLabel = formatDaySummaryLabel(summary);
+                const isSelected = !isFuture && cell.dateKey === safeSelectedDate;
                 const statusClass =
                   summary.total === 0
                     ? "empty"
                     : summary.actionTotal === 0
                       ? "created"
-                      : summary.completed + summary.dismissed === summary.actionTotal
+                      : summary.resolved === summary.actionTotal
                       ? "resolved"
-                      : summary.completed > 0 || summary.dismissed > 0
+                      : summary.resolved > 0
                         ? "partial"
                         : "shown";
                 return (
                   <button
                     key={cell.dateKey}
                     type="button"
-                    className={`today-history-day ${cell.isCurrentMonth ? "" : "outside-month"} ${isSelected ? "active-history-day" : ""} history-day-${statusClass}`}
-                    onClick={() => setSelectedDate(cell.dateKey)}
-                    aria-pressed={isSelected}
-                    aria-label={`${cell.dateKey}，${summary.total} 条记录`}
+                    className={`today-history-day ${cell.isCurrentMonth ? "" : "outside-month"} ${isFuture ? "future-day" : ""} ${isSelected ? "active-history-day" : ""} history-day-${statusClass}`}
+                    onClick={() => {
+                      if (!isFuture) setSelectedDate(cell.dateKey);
+                    }}
+                    disabled={isFuture}
+                    aria-pressed={isFuture ? undefined : isSelected}
+                    aria-label={isFuture ? `${cell.dateKey}，未来日期不可选择` : `${cell.dateKey}，${formatDaySummaryAriaLabel(summary)}`}
                   >
                     <span>{cell.day}</span>
-                    {summary.total > 0 ? <em>{summary.total}条</em> : null}
+                    {summaryLabel ? <em>{summaryLabel}</em> : null}
                   </button>
                 );
               })}
             </div>
           </section>
 
-          <section className="today-history-detail" aria-label={`${selectedDate} 今日行动详情`}>
+          <section className="today-history-detail" aria-label={`${safeSelectedDate} 今日行动详情`}>
             <div className="today-history-detail-header">
               <div>
-                <span className="eyebrow">{selectedDate}</span>
-                <h3>{formatDateTitle(selectedDate)}</h3>
+                <span className="eyebrow">{safeSelectedDate}</span>
+                <h3>{formatTodayActionHistoryDateTitle(safeSelectedDate)}</h3>
               </div>
               <div className="today-history-stats">
-                {selectedSummary.actionTotal > 0 ? (
-                  <>
-                    <span>{selectedSummary.completed} 已完成</span>
-                    {selectedSummary.dismissed > 0 ? <span>{selectedSummary.dismissed} 已跳过</span> : null}
-                    <span>{selectedSummary.shown} 未处理</span>
-                  </>
-                ) : (
-                  <span>0 条行动</span>
-                )}
+                <span>{selectedSummary.actionTotal} 个行动</span>
+                {selectedSummary.completed > 0 ? <span>{selectedSummary.completed} 已完成</span> : null}
+                {selectedSummary.dismissed > 0 ? <span>{selectedSummary.dismissed} 已跳过</span> : null}
+                <span>{selectedSummary.shown} 未处理</span>
+                {selectedSummary.created > 0 ? <span>{selectedSummary.created} 新建</span> : null}
               </div>
             </div>
 
-            {selectedCreatedItems.length > 0 ? (
-              <section className="today-history-source today-history-created-section">
-                <h4>
-                  今日新建
-                  <span>{selectedCreatedItems.length}</span>
-                </h4>
+            <section className="today-history-source today-history-created-section">
+              <h4>
+                当天新建记录
+                <span>{selectedCreatedItems.length}</span>
+              </h4>
+              {selectedCreatedItems.length > 0 ? (
                 <div className="today-history-created-groups">
                   {createdRecordGroups.map((group) => {
                     const groupItems = selectedCreatedItems.filter((item) => item.recordType === group.recordType);
@@ -220,12 +234,14 @@ export function TodayActionHistoryDialog({
                     );
                   })}
                 </div>
-              </section>
-            ) : null}
+              ) : (
+                <p className="today-history-empty-source">功能开启后新建的岗位、面试、答案、训练和简历会显示在这里。</p>
+              )}
+            </section>
 
             <section className="today-history-source today-history-action-section">
               <h4>
-                行动回顾
+                当天行动提醒
                 <span>{selectedSummary.actionTotal}</span>
               </h4>
               {selectedSummary.actionTotal > 0 ? (
@@ -259,7 +275,11 @@ export function TodayActionHistoryDialog({
                   );
                 })
               ) : (
-                <p className="today-history-empty-source">这天没有行动提醒。</p>
+                <p className="today-history-empty-source">
+                  {isSelectedToday
+                    ? "今天还没有行动提醒；历史会从已有提醒开始顺延未处理项，并记录后续新出现的提醒。"
+                    : "这天没有行动提醒。历史功能上线前、或没有任何已记录提醒作为起点的日期不会回填。"}
+                </p>
               )}
             </section>
           </section>

@@ -13,6 +13,7 @@ export type TodayAction = {
   completionOutcome?: string;
   targetId?: string;
   taskId?: string;
+  actionKey?: string;
 };
 
 export type DashboardSummary = {

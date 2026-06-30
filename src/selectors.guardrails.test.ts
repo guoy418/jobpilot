@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { submittedStatuses } from "./domain";
 import { selectDashboardSummary, selectTodayActions } from "./selectors";
 import type { InterviewSession, Opportunity, QaPair, ResumeVersion, WeeklyPlan, WeeklyTask } from "./types";
 
@@ -170,6 +171,61 @@ describe("dashboard selector guardrails", () => {
         id: "opp-invalid-submitted-date",
         status: "APPLIED",
         timeline: [{ id: "tl-invalid-submit", occurredAt: "Next", title: "已投递", detail: "状态已是已投递，但没有实际投递时间", status: "done" }],
+      }),
+    ];
+
+    expect(selectDashboardSummary(opportunities, [], makeWeeklyPlan())).toMatchObject({
+      submittedApplications: 1,
+      applicationGap: 3,
+    });
+  });
+
+  it("counts first direct transition to interviewing this week without recounting old submitted jobs", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 10));
+
+    const opportunities: Opportunity[] = [
+      makeOpportunity({
+        id: "opp-direct-interview-today",
+        status: "INTERVIEWING",
+        timeline: [
+          { id: "tl-direct-submit", occurredAt: "2026-06-24", title: "已投递", detail: "从待投递直接更新到准备面试，补记投递完成", status: "done" },
+          { id: "tl-direct-interview", occurredAt: "2026-06-24", title: "已更新为准备面试", detail: "手动更新当前岗位阶段", status: "done" },
+        ],
+      }),
+      makeOpportunity({
+        id: "opp-direct-interview-old-submit",
+        status: "INTERVIEWING",
+        timeline: [
+          { id: "tl-old-submit", occurredAt: "2026-06-15", title: "已投递", detail: "上周已完成投递", status: "done" },
+          { id: "tl-old-interview", occurredAt: "2026-06-24", title: "已更新为准备面试", detail: "手动更新当前岗位阶段", status: "done" },
+        ],
+      }),
+      makeOpportunity({
+        id: "opp-old-applied-progressed-today",
+        status: "INTERVIEWING",
+        timeline: [{ id: "tl-applied-progress", occurredAt: "2026-06-24", title: "已更新为准备面试", detail: "旧岗位继续推进", status: "done" }],
+      }),
+    ];
+
+    expect(selectDashboardSummary(opportunities, [], makeWeeklyPlan())).toMatchObject({
+      submittedApplications: 1,
+      applicationGap: 3,
+    });
+  });
+
+  it.each(submittedStatuses)("counts TO APPLY -> %s submitted timeline in dashboard summary", (status) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 10));
+
+    const opportunities: Opportunity[] = [
+      makeOpportunity({
+        id: `opp-direct-${status}`,
+        status,
+        timeline: [
+          { id: `tl-submit-${status}`, occurredAt: "2026-06-24", title: "已投递", detail: `从待投递直接更新到${status}，补记投递完成`, status: "done" },
+          { id: `tl-progress-${status}`, occurredAt: "2026-06-24", title: `已更新为${status}`, detail: "手动更新当前岗位阶段", status: "done" },
+        ],
       }),
     ];
 

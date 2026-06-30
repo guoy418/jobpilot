@@ -5,14 +5,18 @@ import {
   compareOpportunityActions,
   computeOpportunityAction,
   countWeeklySubmittedApplications,
+  createSubmittedTransitionEvent,
   defaultOpportunityNextAction,
   getRestorableOpportunityStatus,
   inferDueDateFromText,
+  isSubmittedTimelineEvent,
+  normalizeOpportunityDeadlinePatch,
   opportunityActionValues,
   opportunityStatusFlow,
   opportunityStatusNextAction,
   resolveOpportunityAction,
   shouldAdvanceLinkedOpportunityAfterInterview,
+  shouldRecordSubmittedTransition,
   statusLabel as opportunityStatusLabel,
   submittedStatuses,
 } from "../shared/opportunityRules.mjs";
@@ -885,24 +889,60 @@ export const createRepository = (db) => {
     );
   };
 
-  const timelineWithSyncedNextEvent = (timeline = [], status, nextAction, detail = "由当前岗位进度生成下一步动作") => [
-    ...timeline.filter((event) => event.status !== "next"),
-    ...(status !== "OFFER" && status !== "ENDED"
-      ? [
-          {
-            id: makeId("TL"),
-            occurredAt: "Next",
-            title: nextAction,
-            detail,
-            status: "next",
-          },
-        ]
-      : []),
-  ];
+  const timelineWithSubmittedTransitionEvent = (timeline = [], status, sourceOpportunity = null, occurredAt = nowIso(), progressEvents = []) => {
+    const doneTimeline = timeline.filter((event) => event.status !== "next");
+    const nextTimeline = timeline.filter((event) => event.status === "next");
+    const submittedTransitionEvent =
+      sourceOpportunity && shouldRecordSubmittedTransition(sourceOpportunity, status) && ![...doneTimeline, ...progressEvents].some(isSubmittedTimelineEvent)
+        ? [
+            createSubmittedTransitionEvent({
+              id: makeId("TL"),
+              occurredAt,
+              fromStatus: sourceOpportunity.status,
+              toStatus: status,
+            }),
+          ]
+        : [];
+
+    return {
+      doneTimeline: [...doneTimeline, ...submittedTransitionEvent],
+      nextTimeline,
+    };
+  };
+
+  const timelineWithSyncedNextEvent = (
+    timeline = [],
+    status,
+    nextAction,
+    detail = "由当前岗位进度生成下一步动作",
+    sourceOpportunity = null,
+    occurredAt = nowIso(),
+    progressEvent = null,
+  ) => {
+    const progressEvents = progressEvent ? [progressEvent] : [];
+    const { doneTimeline } = timelineWithSubmittedTransitionEvent(timeline, status, sourceOpportunity, occurredAt, progressEvents);
+
+    return [
+      ...doneTimeline,
+      ...progressEvents,
+      ...(status !== "OFFER" && status !== "ENDED"
+        ? [
+            {
+              id: makeId("TL"),
+              occurredAt: "Next",
+              title: nextAction,
+              detail,
+              status: "next",
+            },
+          ]
+        : []),
+    ];
+  };
 
   const hasLinkedInterviews = (opportunityId) => Boolean(db.prepare("SELECT 1 FROM interview_sessions WHERE opportunity_id = ? LIMIT 1").get(opportunityId));
 
-  const createOpportunity = (input) => {
+  const createOpportunity = (input, options = {}) => {
+    const { syncSubmittedTransition = true } = options;
     const timestamp = nowIso();
     const status = input.status || "TO APPLY";
     const endedAt = status === "ENDED" ? input.endedAt || nowIso() : input.endedAt || null;
@@ -945,49 +985,56 @@ export const createRepository = (db) => {
       timestamp,
     );
     replaceOpportunitySourceAssets(id, input.sourceAssets ?? []);
-    replaceOpportunityTimeline(id, input.timeline ?? []);
+    if (syncSubmittedTransition) {
+      const sourceOpportunity = { status: "TO APPLY", timeline: input.timeline ?? [] };
+      const syncedTimeline = timelineWithSubmittedTransitionEvent(input.timeline ?? [], status, sourceOpportunity, timestamp);
+      replaceOpportunityTimeline(id, [...syncedTimeline.doneTimeline, ...syncedTimeline.nextTimeline]);
+    } else {
+      replaceOpportunityTimeline(id, input.timeline ?? []);
+    }
     return getOpportunity(id);
   };
 
   const updateOpportunity = (id, patch) => {
     const current = getOpportunity(id);
     if (!current) return null;
-    const hasExplicitStatus = "status" in patch && Boolean(patch.status);
+    const normalizedPatch = normalizeOpportunityDeadlinePatch(patch);
+    const hasExplicitStatus = "status" in normalizedPatch && Boolean(normalizedPatch.status);
     const shouldRestoreEndedWithoutStatus =
       current.status === "ENDED" &&
       !hasExplicitStatus &&
-      (patch.endedAt === null || patch.endedReason === null || patch.endedNote === null || patch.previousStatus === null);
+      (normalizedPatch.endedAt === null || normalizedPatch.endedReason === null || normalizedPatch.endedNote === null || normalizedPatch.previousStatus === null);
     const restoredStatus = shouldRestoreEndedWithoutStatus ? getRestorableOpportunityStatus(current, hasLinkedInterviews(id)) : undefined;
     const next = {
       ...current,
-      ...patch,
+      ...normalizedPatch,
       ...(restoredStatus ? { status: restoredStatus } : {}),
     };
     const statusChanged = next.status !== current.status;
-    if (hasExplicitStatus && patch.status === "ENDED") {
-      next.endedAt = patch.endedAt || current.endedAt || nowIso();
-      next.endedReason = patch.endedReason || current.endedReason || "OTHER";
-      next.endedNote = patch.endedNote ?? current.endedNote ?? null;
+    if (hasExplicitStatus && normalizedPatch.status === "ENDED") {
+      next.endedAt = normalizedPatch.endedAt || current.endedAt || nowIso();
+      next.endedReason = normalizedPatch.endedReason || current.endedReason || "OTHER";
+      next.endedNote = normalizedPatch.endedNote ?? current.endedNote ?? null;
       next.previousStatus =
-        patch.previousStatus && patch.previousStatus !== "ENDED"
-          ? patch.previousStatus
+        normalizedPatch.previousStatus && normalizedPatch.previousStatus !== "ENDED"
+          ? normalizedPatch.previousStatus
           : current.status !== "ENDED"
             ? current.status
             : getRestorableOpportunityStatus(current, hasLinkedInterviews(id));
-    } else if (shouldRestoreEndedWithoutStatus || (hasExplicitStatus && patch.status !== "ENDED")) {
-      next.endedAt = patch.endedAt ?? null;
-      next.endedReason = patch.endedReason ?? null;
-      next.endedNote = patch.endedNote ?? null;
-      next.previousStatus = patch.previousStatus ?? null;
+    } else if (shouldRestoreEndedWithoutStatus || (hasExplicitStatus && normalizedPatch.status !== "ENDED")) {
+      next.endedAt = normalizedPatch.endedAt ?? null;
+      next.endedReason = normalizedPatch.endedReason ?? null;
+      next.endedNote = normalizedPatch.endedNote ?? null;
+      next.previousStatus = normalizedPatch.previousStatus ?? null;
     }
-    if (statusChanged && !("nextAction" in patch)) {
+    if (statusChanged && !("nextAction" in normalizedPatch)) {
       next.nextAction = defaultOpportunityNextAction(next.status);
     }
-    if ("deadline" in patch && !("dueDate" in patch)) next.dueDate = inferDueDateFromText(next.deadline);
-    if (!next.actionManual && (statusChanged || ["deadline", "dueDate", "priority", "match"].some((field) => field in patch)) && !("action" in patch)) {
+    if ("deadline" in normalizedPatch && !("dueDate" in normalizedPatch)) next.dueDate = inferDueDateFromText(next.deadline);
+    if (!next.actionManual && (statusChanged || ["deadline", "dueDate", "priority", "match"].some((field) => field in normalizedPatch)) && !("action" in normalizedPatch)) {
       next.action = computeOpportunityAction(next);
     }
-    if ("actionManual" in patch && patch.actionManual === false && !("action" in patch)) {
+    if ("actionManual" in normalizedPatch && normalizedPatch.actionManual === false && !("action" in normalizedPatch)) {
       next.action = computeOpportunityAction(next);
     }
     db.prepare(`
@@ -1034,9 +1081,17 @@ export const createRepository = (db) => {
       nowIso(),
       id,
     );
-    if (patch.sourceAssets) replaceOpportunitySourceAssets(id, patch.sourceAssets);
-    if (patch.timeline) replaceOpportunityTimeline(id, patch.timeline);
-    else if (statusChanged) replaceOpportunityTimeline(id, timelineWithSyncedNextEvent(current.timeline, next.status, next.nextAction));
+    if (normalizedPatch.sourceAssets) replaceOpportunitySourceAssets(id, normalizedPatch.sourceAssets);
+    if (normalizedPatch.timeline) {
+      if (statusChanged) {
+        const syncedTimeline = timelineWithSubmittedTransitionEvent(normalizedPatch.timeline, next.status, current);
+        replaceOpportunityTimeline(id, [...syncedTimeline.doneTimeline, ...syncedTimeline.nextTimeline]);
+      } else {
+        replaceOpportunityTimeline(id, normalizedPatch.timeline);
+      }
+    } else if (statusChanged) {
+      replaceOpportunityTimeline(id, timelineWithSyncedNextEvent(current.timeline, next.status, next.nextAction, "由当前岗位进度生成下一步动作", current));
+    }
     return getOpportunity(id);
   };
 
@@ -1047,12 +1102,12 @@ export const createRepository = (db) => {
     const nextAction = input.nextAction || defaultOpportunityNextAction(status) || current.nextAction;
     const progressEvent = {
       id: input.timelineEvent?.id || makeId("TL"),
-      occurredAt: input.timelineEvent?.occurredAt || "Now",
+      occurredAt: input.timelineEvent?.occurredAt || nowIso(),
       title: input.timelineEvent?.title || `更新为${status}`,
       detail: input.timelineEvent?.detail || "岗位进度更新",
       status: "done",
     };
-    const nextTimeline = timelineWithSyncedNextEvent([...current.timeline, progressEvent], status, nextAction);
+    const nextTimeline = timelineWithSyncedNextEvent(current.timeline, status, nextAction, "由当前岗位进度生成下一步动作", current, progressEvent.occurredAt, progressEvent);
     const updatedOpportunity = updateOpportunity(id, {
       status,
       ...(status === "ENDED"
@@ -1858,14 +1913,17 @@ export const createRepository = (db) => {
     const opportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
     const linkedInterviewOpportunityIds = new Set(interviewSessions.map((session) => session.opportunityId).filter((opportunityId) => opportunityIds.has(opportunityId)));
     opportunities.forEach((opportunity) =>
-      createOpportunity({
-        ...opportunity,
-        previousStatus:
-          opportunity.status === "ENDED" && !opportunity.previousStatus && linkedInterviewOpportunityIds.has(opportunity.id)
-            ? getRestorableOpportunityStatus(opportunity, true)
-            : opportunity.previousStatus,
-        resumeId: resumeIds.has(opportunity.resumeId) ? opportunity.resumeId : "",
-      }),
+      createOpportunity(
+        {
+          ...opportunity,
+          previousStatus:
+            opportunity.status === "ENDED" && !opportunity.previousStatus && linkedInterviewOpportunityIds.has(opportunity.id)
+              ? getRestorableOpportunityStatus(opportunity, true)
+              : opportunity.previousStatus,
+          resumeId: resumeIds.has(opportunity.resumeId) ? opportunity.resumeId : "",
+        },
+        { syncSubmittedTransition: false },
+      ),
     );
 
     interviewSessions.forEach((session) =>

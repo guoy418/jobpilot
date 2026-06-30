@@ -5,6 +5,7 @@ export {
   compareOpportunityActions,
   computeOpportunityAction,
   countWeeklySubmittedApplications,
+  createSubmittedTransitionEvent,
   defaultOpportunityNextAction,
   getOpportunitySubmittedAt,
   getOpportunityDaysUntilDue,
@@ -13,6 +14,9 @@ export {
   getWeeklyWindow,
   inferDueDateFromText,
   isOpportunityDueSoon,
+  normalizeOpportunityDeadline,
+  normalizeOpportunityDeadlinePatch,
+  normalizeOpportunityDueDate,
   opportunityActionPriorityRank,
   opportunityActionValues,
   opportunityStatusAction,
@@ -21,9 +25,11 @@ export {
   parseDateLike,
   resolveOpportunityAction,
   shouldAdvanceLinkedOpportunityAfterInterview,
+  shouldRecordSubmittedTransition,
   statusLabel,
   submittedStatuses,
   isSubmittedTimelineEvent,
+  isSubmittedOrLaterStatus,
 } from "../shared/opportunityRules.mjs";
 
 export const sourceKindLabel: Record<SourceAsset["kind"], string> = {

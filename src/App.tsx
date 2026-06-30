@@ -16,13 +16,14 @@ import {
   KanbanSquare,
   Library,
   Moon,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
   Sun,
   Upload,
 } from "lucide-react";
-import { type DragEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiModeBadge,
   EmptyState,
@@ -52,6 +53,7 @@ import { useApiModeController } from "./hooks/useApiModeController";
 import { useDismissedTodayActions } from "./hooks/useDismissedTodayActions";
 import { useModuleComposerController } from "./hooks/useModuleComposerController";
 import { useTodayActionHistory } from "./hooks/useTodayActionHistory";
+import { useTodayActionTitleOverrides } from "./hooks/useTodayActionTitleOverrides";
 import { useThemePreference } from "./hooks/useThemePreference";
 import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
 import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
@@ -59,17 +61,21 @@ import { InterviewsPage, type InterviewView, type QaUpdateField } from "./pages/
 import { isGarbledTextContent } from "./textEncoding";
 import {
   computeOpportunityAction,
+  createSubmittedTransitionEvent,
   defaultOpportunityNextAction,
   resolveOpportunityAction,
   formatNow,
   getRestorableOpportunityStatus,
   getOpportunityDueDate,
   inferDueDateFromText,
+  isSubmittedTimelineEvent,
   isOpportunityDueSoon,
   makeId,
+  normalizeOpportunityDeadlinePatch,
   opportunityStatusFlow,
   opportunityStatusNextAction,
   shouldAdvanceLinkedOpportunityAfterInterview,
+  shouldRecordSubmittedTransition,
   sourceKindLabel,
   statusLabel,
   submittedStatuses,
@@ -119,7 +125,7 @@ import { baseAnswerCards, baseAnswerCategories, baseWeeklyPlan, resumeVersions, 
 import { selectDashboardSummary, selectResumeName, selectTodayActions, type TodayAction } from "./selectors";
 import { formatDueDateDisplay, localDateKey as todayDateKey } from "./utils/date";
 import { BACKUP_SCHEMA_VERSION } from "./utils/backup";
-import { extractionStatusLabel, failedExtractionStatuses } from "./utils/composerSource";
+import { extractionStatusLabel, extractJobLinkFromSource, failedExtractionStatuses, isJobLinkOnlyText } from "./utils/composerSource";
 import {
   composerValidationMessage,
   formatComposerApiError,
@@ -142,6 +148,7 @@ import {
   todayActionSourceDetail,
   todayActionSourceLabel,
 } from "./utils/todayActions";
+import { applyTodayActionTitleOverrides } from "./utils/todayActionTitles";
 import type {
   AnswerCard,
   AnswerCategory,
@@ -314,20 +321,41 @@ const timelineWithSyncedNextEvent = (
   status: OpportunityStatus,
   nextAction: string,
   detail = "由当前岗位进度生成下一步动作",
-): TimelineEvent[] => [
-  ...timeline.filter((event) => event.status !== "next"),
-  ...(status !== "OFFER" && status !== "ENDED"
-    ? [
-        {
-          id: makeId("TL"),
-          occurredAt: "Next",
-          title: nextAction,
-          detail,
-          status: "next" as const,
-        },
-      ]
-    : []),
-];
+  sourceOpportunity?: Opportunity,
+  occurredAt = todayDateKey(),
+  progressEvent?: TimelineEvent,
+): TimelineEvent[] => {
+  const doneTimeline = timeline.filter((event) => event.status !== "next");
+  const progressEvents = progressEvent ? [progressEvent] : [];
+  const submittedTransitionEvent =
+    sourceOpportunity && shouldRecordSubmittedTransition(sourceOpportunity, status) && ![...doneTimeline, ...progressEvents].some(isSubmittedTimelineEvent)
+      ? [
+          createSubmittedTransitionEvent({
+            id: makeId("TL"),
+            occurredAt,
+            fromStatus: sourceOpportunity.status,
+            toStatus: status,
+          }) as TimelineEvent,
+        ]
+      : [];
+
+  return [
+    ...doneTimeline,
+    ...submittedTransitionEvent,
+    ...progressEvents,
+    ...(status !== "OFFER" && status !== "ENDED"
+      ? [
+          {
+            id: makeId("TL"),
+            occurredAt: "Next",
+            title: nextAction,
+            detail,
+            status: "next" as const,
+          },
+        ]
+      : []),
+  ];
+};
 
 const normalizeParsedQaPairs = (items: unknown): Array<Omit<QaPair, "id">> => {
   if (!Array.isArray(items)) return [];
@@ -365,6 +393,8 @@ function App() {
   const [todayActionView, setTodayActionView] = useState<"priority" | "source">("priority");
   const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
   const [todayHistoryOpen, setTodayHistoryOpen] = useState(false);
+  const [editingTodayActionKey, setEditingTodayActionKey] = useState("");
+  const [todayActionTitleDraft, setTodayActionTitleDraft] = useState("");
   const [expandedTodaySources, setExpandedTodaySources] = useState<Partial<Record<TodayAction["source"], boolean>>>({});
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
@@ -412,6 +442,7 @@ function App() {
   const { apiMode, markApiOnline, markApiOffline, refreshApiHealth, useFallbackApiMode } = useApiModeController({ onMessage: setSystemMessage });
   const { apiDashboardSummary, apiTodayActions, replaceApiInsights, refreshApiInsights, invalidateApiInsights, invalidateTodayActions } = useApiInsights();
   const { dismissTodayAction, isTodayActionDismissed } = useDismissedTodayActions();
+  const { titleOverrides: todayActionTitleOverrides, saveTodayActionTitleOverride } = useTodayActionTitleOverrides();
   const {
     composer,
     composerStep,
@@ -553,7 +584,15 @@ function App() {
   const getResumeName = (resumeId: string) => selectResumeName(resumeList, resumeId);
   const localTodayActions = selectTodayActions(opportunities, interviewSessions, answerCards, weeklyPlan, resumeList);
   const hydratedTodayActions = normalizeTodayActions(apiTodayActions, localTodayActions);
-  const todayActions = hydratedTodayActions.filter((action) => !isTodayActionDismissed(action));
+  const weeklyTaskTitleById = new Map(weeklyPlan.tasks.map((task) => [task.id, task.title]));
+  const sourceSyncedTodayActions = hydratedTodayActions.map((action) => {
+    if (action.source !== "weekly") return action;
+    const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
+    const title = taskId ? weeklyTaskTitleById.get(taskId) : undefined;
+    return title ? { ...action, title } : action;
+  });
+  const titledTodayActions = applyTodayActionTitleOverrides(sourceSyncedTodayActions, todayActionTitleOverrides);
+  const todayActions = titledTodayActions.filter((action) => !isTodayActionDismissed(action));
   const {
     historyItems: todayActionHistoryItems,
     recordCompletedTodayAction,
@@ -783,9 +822,14 @@ function App() {
   const runComposerParse = async () => {
     if (!composer || composerParsing) return;
     const rawText = composerSource.rawText.trim();
-    const sourceInputText = composer === "opportunity" && composerSource.sourceKind === "job-link"
-      ? `${composerSource.note.trim()} ${rawText}`.trim()
-      : rawText;
+    const recruitmentLink = composer === "opportunity" ? extractJobLinkFromSource(composerSource) : "";
+    const rawTextIsOnlyJobLink = composer === "opportunity" && composerSource.sourceKind === "job-link" && isJobLinkOnlyText(rawText);
+    const hasOnlyOpportunityJobLink =
+      composer === "opportunity" && composerSource.sourceKind === "job-link" && Boolean(recruitmentLink) && (!rawText || rawTextIsOnlyJobLink) && !composerSource.fileName.trim();
+    const sourceInputText =
+      composer === "opportunity" && composerSource.sourceKind === "job-link"
+        ? [recruitmentLink || composerSource.note.trim(), rawTextIsOnlyJobLink ? "" : rawText].filter(Boolean).join(" ")
+        : rawText;
     const fileName = composerSource.fileName.trim();
     if (composer !== "answer" && !sourceInputText && !fileName) {
       setComposerParseNotice(
@@ -854,11 +898,14 @@ function App() {
       if (composer === "opportunity") {
       const company = detectCompany(parseText) || composerDraft.company || "待填写公司";
       const title = detectRoleTitle(parseText, composerDraft.title);
+      const shouldKeepRawTextAsJobDescription = Boolean(rawText) && !(composerSource.sourceKind === "job-link" && rawTextIsOnlyJobLink);
       const parsedSourceText =
-        rawText ||
-        (composerSource.sourceKind === "screenshot"
-          ? `截图文件：${fileName}。文件已保存；开启智能整理后可以识别图片文字。`
-          : `上传文件：${fileName}。文件已保存；如果没有读到内容，可以直接粘贴文字。`);
+        (shouldKeepRawTextAsJobDescription ? rawText : "") ||
+        (composerSource.sourceKind === "job-link"
+          ? ""
+          : composerSource.sourceKind === "screenshot"
+            ? `截图文件：${fileName}。文件已保存；开启智能整理后可以识别图片文字。`
+            : `上传文件：${fileName}。文件已保存；如果没有读到内容，可以直接粘贴文字。`);
       const parsedDeadline = parseText.includes("今晚") ? "Tonight" : parseText.includes("明天") ? "Tomorrow" : composerDraft.deadline;
       const parsedDueDate = inferDueDateFromText(parsedDeadline);
       const parsedPriority = parseText.includes("内推") || parseText.includes("急") ? "A" : composerDraft.priority;
@@ -914,7 +961,7 @@ function App() {
 
       setComposerStep("review");
       setComposerParseNotice("");
-      setSystemMessage("内容已整理");
+      setSystemMessage(composer === "opportunity" && composerSource.sourceKind === "job-link" ? "招聘链接已记录，请补充岗位信息" : "内容已整理");
     };
 
     const shouldUseAiAssist =
@@ -925,7 +972,7 @@ function App() {
         : aiSettings.parseMode === "assist";
     const sendAiSettings = shouldSendAiSettings(aiSettings, composerSource.sourceKind, shouldUseAiAssist);
     const hasStoredExtractableFile = Boolean(composerSource.storageUri && composer !== "answer" && composerSource.sourceKind !== "audio");
-    const shouldUseParseApi = isApiEnabled && (sendAiSettings || hasStoredExtractableFile);
+    const shouldUseParseApi = !hasOnlyOpportunityJobLink && isApiEnabled && (sendAiSettings || hasStoredExtractableFile);
     const requiresFileExtraction = Boolean(fileName && !rawText && composer !== "answer");
 
     const blockParseWithNotice = (status: string, notice: string) => {
@@ -1155,13 +1202,19 @@ function App() {
   };
 
   const updateSelectedOpportunity = (patch: Partial<Opportunity>) => {
-    const normalizedPatch: Partial<Opportunity> = { ...patch };
+    const normalizedPatch = normalizeOpportunityDeadlinePatch(patch) as Partial<Opportunity>;
     const statusChanged = Boolean(normalizedPatch.status && normalizedPatch.status !== selectedOpportunity.status);
     if (statusChanged && normalizedPatch.status && !("nextAction" in normalizedPatch)) {
       normalizedPatch.nextAction = defaultOpportunityNextAction(normalizedPatch.status);
     }
     if (statusChanged && normalizedPatch.status && !("timeline" in normalizedPatch)) {
-      normalizedPatch.timeline = timelineWithSyncedNextEvent(selectedOpportunity.timeline, normalizedPatch.status, normalizedPatch.nextAction ?? selectedOpportunity.nextAction);
+      normalizedPatch.timeline = timelineWithSyncedNextEvent(
+        selectedOpportunity.timeline,
+        normalizedPatch.status,
+        normalizedPatch.nextAction ?? selectedOpportunity.nextAction,
+        "由当前岗位进度生成下一步动作",
+        selectedOpportunity,
+      );
     }
     const nextOpportunity = { ...selectedOpportunity, ...normalizedPatch };
     const shouldRecomputeAction =
@@ -1322,7 +1375,7 @@ function App() {
 
   useEffect(() => {
     if (!confirmDialog && !previewAsset && !previewSessionFile && !weeklyTaskForm && !weeklyPriorityTask && !composer && !todayHistoryOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (confirmDialog) setConfirmDialog(null);
       else if (composer) closeComposer();
@@ -1978,7 +2031,7 @@ function App() {
       priority: composerDraft.priority,
     });
     const action = composerDraft.actionManual && composerDraft.action ? composerDraft.action : suggestedAction;
-    const recruitmentLink = composerSource.note.trim();
+    const recruitmentLink = extractJobLinkFromSource(composerSource);
     const shouldKeepMaterialAsset = composerSource.sourceKind === "screenshot" || Boolean(composerSource.storageUri);
     const materialAssetKind: SourceAsset["kind"] = composerSource.sourceKind === "screenshot" ? "screenshot" : "jd-text";
     const sourceAssets: SourceAsset[] = [];
@@ -2017,7 +2070,7 @@ function App() {
       dueDate,
       resumeId: composerDraft.resumeId || resumeList[0]?.id || "",
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
-      jdSummary: composerSource.note || "从上传材料整理出的岗位记录。",
+      jdSummary: recruitmentLink || composerDraft.sourceText.trim() || "从上传材料整理出的岗位记录。",
       jdText: composerDraft.sourceText.trim(),
       sourceAssets,
       timeline: [
@@ -2242,21 +2295,7 @@ function App() {
       status,
       action: opportunity.actionManual ? opportunity.action : computeOpportunityAction({ ...opportunity, status }),
       nextAction,
-      timeline: [
-        ...opportunity.timeline.filter((event) => event.status !== "next"),
-        timelineEvent,
-        ...(status !== "OFFER" && status !== "ENDED"
-          ? [
-              {
-                id: makeId("TL"),
-                occurredAt: "Next",
-                title: nextAction,
-                detail: "当前进度的备注",
-                status: "next" as const,
-              },
-            ]
-          : []),
-      ],
+      timeline: timelineWithSyncedNextEvent(opportunity.timeline, status, nextAction, "当前进度的备注", opportunity, now, timelineEvent),
     });
     const applyProgressSideEffects = (opportunity: Opportunity) => {
       if (submittedStatuses.includes(status)) {
@@ -2269,16 +2308,18 @@ function App() {
         );
       }
     };
-    const applyLocalProgress = () => {
-      const nextOpportunity = buildLocalOpportunity(targetOpportunity);
-      setOpportunities((items) => items.map((item) => (item.id === opportunityId ? nextOpportunity : item)));
-      applyProgressSideEffects(nextOpportunity);
-      invalidateTodayActions();
-      setSystemMessage(`已更新为${statusLabel[status]}`);
+    const optimisticOpportunity = buildLocalOpportunity(targetOpportunity);
+    const applyLocalProgress = (message = `已更新为${statusLabel[status]}`) => {
+      setOpportunities((items) => items.map((item) => (item.id === opportunityId ? optimisticOpportunity : item)));
+      applyProgressSideEffects(optimisticOpportunity);
+      invalidateApiInsights();
+      setSystemMessage(message);
     };
 
-    invalidateTodayActions();
+    invalidateApiInsights();
     if (isApiEnabled && apiOpportunityIdsRef.current.has(opportunityId)) {
+      setOpportunities((items) => items.map((item) => (item.id === opportunityId ? optimisticOpportunity : item)));
+      applyProgressSideEffects(optimisticOpportunity);
       setSystemMessage("正在更新进度");
       void progressOpportunityApi(opportunityId, {
         status,
@@ -2293,7 +2334,6 @@ function App() {
           setSystemMessage(`已更新为${statusLabel[status]}`);
         })
         .catch(() => {
-          applyLocalProgress();
           setSystemMessage("岗位已保存在本机");
         });
       return;
@@ -2452,11 +2492,111 @@ function App() {
     }));
   };
 
+  const startTodayActionTitleEdit = (action: TodayAction, event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    setEditingTodayActionKey(todayActionKey(action));
+    setTodayActionTitleDraft(action.title);
+  };
+
+  const cancelTodayActionTitleEdit = (event?: MouseEvent<HTMLElement>) => {
+    event?.stopPropagation();
+    setEditingTodayActionKey("");
+    setTodayActionTitleDraft("");
+  };
+
+  const saveTodayActionTitle = (action: TodayAction, event?: MouseEvent<HTMLElement>) => {
+    event?.stopPropagation();
+    const title = todayActionTitleDraft.trim();
+    if (!title) {
+      setSystemMessage("请填写行动标题");
+      return;
+    }
+
+    if (action.source === "weekly") {
+      const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
+      if (taskId) {
+        updateWeeklyTask(taskId, "title", title);
+      } else {
+        saveTodayActionTitleOverride(action, title);
+      }
+    } else {
+      saveTodayActionTitleOverride(action, title);
+    }
+
+    setEditingTodayActionKey("");
+    setTodayActionTitleDraft("");
+    setSystemMessage("行动标题已更新");
+  };
+
+  const handleTodayActionTitleKeyDown = (action: TodayAction, event: KeyboardEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveTodayActionTitle(action);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelTodayActionTitleEdit();
+    }
+  };
+
+  const renderTodayActionTitle = (action: TodayAction, options: { as?: "h3" | "span"; className?: string } = {}) => {
+    const titleClassName = ["today-action-title", options.className].filter(Boolean).join(" ");
+    const actionKey = todayActionKey(action);
+    const isEditing = editingTodayActionKey === actionKey;
+    const content = isEditing ? (
+      <span className="today-title-editor" onClick={(event) => event.stopPropagation()}>
+        <input
+          type="text"
+          value={todayActionTitleDraft}
+          onChange={(event) => setTodayActionTitleDraft(event.target.value)}
+          onKeyDown={(event) => handleTodayActionTitleKeyDown(action, event)}
+          aria-label={`编辑行动标题：${action.title}`}
+          autoFocus
+        />
+        <button type="button" className="today-title-save-button" onClick={(event) => saveTodayActionTitle(action, event)}>
+          保存
+        </button>
+        <button type="button" className="today-title-cancel-button" onClick={cancelTodayActionTitleEdit}>
+          取消
+        </button>
+      </span>
+    ) : (
+      <>
+        <button
+          type="button"
+          className="today-action-title-open"
+          aria-label={`打开行动：${action.title}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            openTodayAction(action);
+          }}
+        >
+          <span>{action.title}</span>
+        </button>
+        <button
+          type="button"
+          className="today-action-title-edit"
+          aria-label={`编辑行动标题：${action.title}`}
+          onClick={(event) => startTodayActionTitleEdit(action, event)}
+        >
+          <Pencil size={12} aria-hidden="true" />
+        </button>
+      </>
+    );
+
+    if (options.as === "h3") return <h3 className={titleClassName}>{content}</h3>;
+    return <span className={titleClassName}>{content}</span>;
+  };
+
   const completeTodayAction = (action: TodayAction) => {
     if (action.source === "weekly") {
       const taskId = action.taskId || (action.page === "weekly" ? action.targetId : "");
-      if (!taskId) return;
       recordCompletedTodayAction(action);
+      if (!taskId) {
+        dismissTodayAction(action);
+        setSystemMessage("今日任务已完成");
+        return;
+      }
       updateWeeklyTask(taskId, "status", "done");
       invalidateTodayActions();
       setSystemMessage("今日任务已完成");
@@ -2464,9 +2604,14 @@ function App() {
     }
 
     if (action.source === "opportunity" && action.targetId) {
-      const opportunity = opportunities.find((item) => item.id === action.targetId);
-      if (!opportunity) return;
       recordCompletedTodayAction(action);
+      const opportunity = opportunities.find((item) => item.id === action.targetId);
+      if (!opportunity) {
+        dismissTodayAction(action);
+        invalidateTodayActions();
+        setSystemMessage("今日已完成");
+        return;
+      }
       const nextStatus = completedOpportunityStatus(opportunity.status);
       if (nextStatus) {
         applyOpportunityProgress(opportunity.id, nextStatus, "manual", action.title);
@@ -2479,9 +2624,14 @@ function App() {
     }
 
     if (action.source === "interview" && action.targetId) {
-      const session = interviewSessions.find((item) => item.id === action.targetId);
-      if (!session) return;
       recordCompletedTodayAction(action);
+      const session = interviewSessions.find((item) => item.id === action.targetId);
+      if (!session) {
+        dismissTodayAction(action);
+        invalidateTodayActions();
+        setSystemMessage("复盘任务已完成");
+        return;
+      }
       const weakPairs = session.qaPairs.filter((pair) => pair.weak);
       setInterviewSessions((sessions) =>
         sessions.map((item) =>
@@ -2835,14 +2985,16 @@ function App() {
                       {topTodayActions.map((action, index) => (
                         <article className={`today-action-card today-source-${action.source}`} key={todayActionKey(action)}>
                           <span className="today-action-rank">{String(index + 1).padStart(2, "0")}</span>
-                          <button className="today-action-open" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
-                            <span className="today-action-icon" aria-hidden="true">
-                              {action.source === "opportunity" ? <BriefcaseBusiness size={16} /> : action.source === "interview" ? <FileAudio size={16} /> : <CalendarClock size={16} />}
-                            </span>
-                            <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
-                            <span className="source-chip">{todayActionSourceLabel(action)}</span>
-                            <h3>{action.title}</h3>
-                          </button>
+                          <div className="today-action-main">
+                            <button type="button" className="today-action-open" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                              <span className="today-action-icon" aria-hidden="true">
+                                {action.source === "opportunity" ? <BriefcaseBusiness size={16} /> : action.source === "interview" ? <FileAudio size={16} /> : <CalendarClock size={16} />}
+                              </span>
+                              <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
+                              <span className="source-chip">{todayActionSourceLabel(action)}</span>
+                            </button>
+                            {renderTodayActionTitle(action, { as: "h3", className: "today-action-title-card" })}
+                          </div>
                           <details className="today-action-context">
                             <summary className="today-action-disclosure" aria-label={`查看 ${action.title} 的来源与下一步`}>
                               <span>来源与下一步</span>
@@ -2863,7 +3015,7 @@ function App() {
                               </div>
                             </dl>
                           </details>
-                          <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                          <button type="button" className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
                             完成
                           </button>
                         </article>
@@ -2880,16 +3032,16 @@ function App() {
                           <div className="action-list today-secondary-list">
                             {moreTodayActions.map((action) => (
                               <div className="action-row" key={todayActionKey(action)}>
-                                <button className="action-row-main" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                                <div className="action-row-main">
                                   <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
                                   <span className="action-copy">
                                     <strong>
                                       <em className="source-chip">{todayActionSourceLabel(action)}</em>
-                                      {action.title}
+                                      {renderTodayActionTitle(action)}
                                     </strong>
                                   </span>
-                                </button>
-                                <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                                </div>
+                                <button type="button" className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
                                   完成
                                 </button>
                                 <details className="today-action-context today-secondary-context">
@@ -2963,14 +3115,14 @@ function App() {
                               <div className="action-list today-secondary-list today-source-action-list" id={sourceActionsId} onClick={(event) => event.stopPropagation()}>
                                 {visibleSourceActions.map((action) => (
                                   <div className="action-row" key={todayActionKey(action)}>
-                                    <button className="action-row-main" aria-label={`打开行动：${action.title}`} onClick={() => openTodayAction(action)}>
+                                    <div className="action-row-main">
                                       <span className={`priority ${action.level.toLowerCase()}`}>{action.level}</span>
                                       <span className="action-copy">
-                                        <strong>{action.title}</strong>
+                                        <strong>{renderTodayActionTitle(action)}</strong>
                                         <small>{todayActionSourceDetail(action)}</small>
                                       </span>
-                                    </button>
-                                    <button className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
+                                    </div>
+                                    <button type="button" className="secondary-button compact-button action-complete-button" onClick={() => completeTodayAction(action)}>
                                       完成
                                     </button>
                                     <details className="today-action-context today-secondary-context">
@@ -3788,6 +3940,7 @@ function App() {
         {todayHistoryOpen && (
           <TodayActionHistoryDialog
             historyItems={todayActionHistoryItems}
+            todayActions={todayActions}
             onClose={() => setTodayHistoryOpen(false)}
             onBackdropMouseDown={markModalBackdropPointerStart}
             onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setTodayHistoryOpen(false))}

@@ -1,6 +1,30 @@
 import type { ModuleComposerSource } from "../types";
 import { isApiEnabled } from "../appConfig";
 
+const text = (value: string) => value.trim();
+const urlPattern = /https?:\/\/[^\s"'<>，。)）]+/i;
+
+export const extractJobLinkFromSource = (source: ModuleComposerSource) => {
+  if (source.sourceKind !== "job-link") return "";
+  const candidates = [source.note, source.rawText, source.fileName].map(text).filter(Boolean);
+  for (const candidate of candidates) {
+    const url = candidate.match(urlPattern)?.[0];
+    if (url) return url;
+  }
+  return candidates[0] ?? "";
+};
+
+export const isJobLinkOnlyText = (value: string) => {
+  const normalized = text(value);
+  const url = normalized.match(urlPattern)?.[0];
+  if (!url) return false;
+  const remainder = normalized
+    .replace(url, "")
+    .replace(/^(?:招聘链接|投递链接|岗位链接|链接|url)[:：\s-]*/i, "")
+    .replace(/[，。,；;、\s()（）[\]【】"'<>《》-]/g, "");
+  return remainder.length === 0;
+};
+
 export const failedExtractionStatuses = new Set([
   "stored-file-missing",
   "empty-pdf-text",
@@ -54,17 +78,20 @@ export const extractionStatusLabel = (status?: string) => {
 
 export const uploadStatusLabel = (source: ModuleComposerSource) => {
   if (source.rawText.trim()) return "已读取文字，可以继续";
+  if (extractJobLinkFromSource(source)) return "链接已填写，可以继续";
   if (source.uploadStatus === "reading") return "正在读取文本文件...";
   if (source.uploadStatus === "uploading") return "正在保存文件...";
   if (source.uploadStatus === "stored") return "文件已准备好";
   if (source.uploadStatus === "failed") return "文件保存失败，请重新选择或粘贴文字";
   if (source.uploadStatus === "local-only") return "文件已选择；如无法读取，请直接粘贴文字";
   if (source.fileName) return "文件已选择";
+  if (source.sourceKind === "job-link") return "请填写招聘链接";
   return "未选择文件";
 };
 
 export const canRunSourceParse = (source: ModuleComposerSource) => {
   if (source.rawText.trim()) return true;
+  if (extractJobLinkFromSource(source)) return true;
   if (!source.fileName.trim()) return false;
   if (source.uploadStatus === "reading" || source.uploadStatus === "uploading") return false;
   return Boolean(isApiEnabled && source.storageUri);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createModuleComposerDraft, createModuleComposerSource } from "../composerModel";
+import { canRunSourceParse, extractJobLinkFromSource, isJobLinkOnlyText, uploadStatusLabel } from "./composerSource";
 import {
   composerValidationMessage,
   formatComposerApiError,
@@ -39,6 +40,31 @@ describe("composer validation utilities", () => {
     };
 
     expect(validateOpportunityComposerDraft(nextDraft, source())).toEqual({ ok: true, errors: [] });
+  });
+
+  it("allows opportunity job-link sources without requiring JD text", () => {
+    const recruitmentLink = "https://jobs.example.com/opportunities/frontend-intern";
+    const nextDraft = {
+      ...draft(),
+      company: "腾讯",
+      title: "前端实习生",
+      sourceText: "",
+    };
+    const noteLinkSource = {
+      ...createModuleComposerSource("job-link"),
+      note: recruitmentLink,
+    };
+    const rawTextLinkSource = {
+      ...createModuleComposerSource("job-link"),
+      rawText: recruitmentLink,
+    };
+
+    expect(canRunSourceParse(noteLinkSource)).toBe(true);
+    expect(uploadStatusLabel(noteLinkSource)).toContain("链接已填写");
+    expect(extractJobLinkFromSource(rawTextLinkSource)).toBe(recruitmentLink);
+    expect(isJobLinkOnlyText(rawTextLinkSource.rawText)).toBe(true);
+    expect(validateOpportunityComposerDraft(nextDraft, noteLinkSource)).toEqual({ ok: true, errors: [] });
+    expect(validateOpportunityComposerDraft(nextDraft, rawTextLinkSource)).toEqual({ ok: true, errors: [] });
   });
 
   it("requires imported or parsed interview questions before creating interview records", () => {

@@ -26,6 +26,7 @@ type WeeklyPlanLike = {
 };
 
 type TimelineEventLike = {
+  id?: string;
   occurredAt?: string;
   title?: string;
   detail?: string;
@@ -38,6 +39,13 @@ type OpportunitySubmittedLike = {
   timeline?: TimelineEventLike[];
 };
 
+type SubmittedTransitionEventInput = {
+  id: string;
+  occurredAt?: string;
+  fromStatus?: OpportunityStatus;
+  toStatus: OpportunityStatus;
+};
+
 export const statusLabel: Record<OpportunityStatus, string>;
 export const submittedStatuses: OpportunityStatus[];
 export const opportunityStatusFlow: OpportunityStatus[];
@@ -47,6 +55,12 @@ export const opportunityActionValues: OpportunityAction[];
 export const opportunityActionPriorityRank: Record<OpportunityAction, number>;
 export const compareOpportunityActions: (left: OpportunityAction, right: OpportunityAction) => number;
 export const inferDueDateFromText: (deadline?: string) => string;
+export const normalizeOpportunityDeadline: (deadline?: string | null) => string;
+export const normalizeOpportunityDueDate: (dueDate?: string | null) => string;
+export const normalizeOpportunityDeadlinePatch: <Patch extends object>(patch?: Patch) => Patch & {
+  deadline?: string;
+  dueDate?: string;
+};
 export const getOpportunityDueDate: (opportunity: OpportunityDeadlineLike) => string;
 export const getOpportunityDaysUntilDue: (opportunity: OpportunityDeadlineLike) => number | null;
 export const isOpportunityDueSoon: (opportunity: OpportunityDeadlineLike) => boolean;
@@ -61,38 +75,8 @@ export const shouldAdvanceLinkedOpportunityAfterInterview: (status: OpportunityS
 export const parseDateLike: (value?: string, now?: Date) => Date | null;
 export const getWeeklyWindow: (weeklyPlan?: WeeklyPlanLike | null, now?: Date) => { start: Date; end: Date };
 export const isSubmittedTimelineEvent: (event?: TimelineEventLike | null) => boolean;
+export const isSubmittedOrLaterStatus: (status?: OpportunityStatus | null) => boolean;
+export const shouldRecordSubmittedTransition: (opportunity: OpportunitySubmittedLike, nextStatus: OpportunityStatus) => boolean;
+export const createSubmittedTransitionEvent: (input: SubmittedTransitionEventInput) => TimelineEventLike & { id: string; status: "done" };
 export const getOpportunitySubmittedAt: (opportunity: OpportunitySubmittedLike, now?: Date) => Date | null;
 export const countWeeklySubmittedApplications: (opportunities?: OpportunitySubmittedLike[], weeklyPlan?: WeeklyPlanLike | null, now?: Date) => number;
-import type { Opportunity, OpportunityAction, OpportunityMatch, OpportunityPriority, OpportunityStatus } from "../src/types";
-
-type ActionInput = {
-  status?: OpportunityStatus;
-  deadline?: string;
-  dueDate?: string;
-  match?: OpportunityMatch | "";
-  priority?: OpportunityPriority | "";
-};
-
-type RestorableOpportunityInput = Pick<Opportunity, "status" | "previousStatus">;
-type ResolveOpportunityInput = ActionInput & Pick<Opportunity, "status"> & Partial<Pick<Opportunity, "action" | "actionManual">>;
-
-export const statusLabel: Record<OpportunityStatus, string>;
-export const submittedStatuses: OpportunityStatus[];
-export const opportunityStatusFlow: OpportunityStatus[];
-export const opportunityStatusAction: Record<OpportunityStatus, OpportunityAction>;
-export const opportunityStatusNextAction: Record<OpportunityStatus, string>;
-export const opportunityActionValues: OpportunityAction[];
-export const opportunityActionPriorityRank: Record<OpportunityAction, number>;
-
-export const compareOpportunityActions: (left: OpportunityAction, right: OpportunityAction) => number;
-export const inferDueDateFromText: (deadline?: string) => string;
-export const getOpportunityDueDate: (opportunity: Pick<ActionInput, "deadline" | "dueDate">) => string;
-export const getOpportunityDaysUntilDue: (opportunity: Pick<ActionInput, "deadline" | "dueDate">) => number | null;
-export const isOpportunityDueSoon: (opportunity: Pick<ActionInput, "deadline" | "dueDate">) => boolean;
-export const computeOpportunityAction: (input: ActionInput) => OpportunityAction;
-export const resolveOpportunityAction: (opportunity: ResolveOpportunityInput) => OpportunityAction;
-export const defaultOpportunityNextAction: (status: OpportunityStatus) => string;
-export const getRestorableOpportunityStatus: (opportunity: RestorableOpportunityInput, hasLinkedInterviews?: boolean) => Exclude<OpportunityStatus, "ENDED">;
-export const shouldAdvanceLinkedOpportunityAfterInterview: (status: OpportunityStatus) => boolean;
-export const parseDateLike: (value?: string, now?: Date) => Date | null;
-export const getWeeklyWindow: (weeklyPlan?: { weekStart?: string } | null, now?: Date) => { start: Date; end: Date };

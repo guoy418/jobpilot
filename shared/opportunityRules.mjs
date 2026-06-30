@@ -85,6 +85,32 @@ export const inferDueDateFromText = (deadline = "") => {
   return "";
 };
 
+export const normalizeOpportunityDeadline = (deadline = "") => String(deadline ?? "").trim() || "待定";
+
+export const normalizeOpportunityDueDate = (dueDate = "") => String(dueDate ?? "").trim();
+
+export const normalizeOpportunityDeadlinePatch = (patch = {}) => {
+  const normalizedPatch = { ...patch };
+  const hasDeadline = Object.prototype.hasOwnProperty.call(patch, "deadline");
+  const hasDueDate = Object.prototype.hasOwnProperty.call(patch, "dueDate");
+
+  if (hasDeadline) {
+    normalizedPatch.deadline = normalizeOpportunityDeadline(patch.deadline);
+  }
+
+  if (hasDueDate) {
+    normalizedPatch.dueDate = normalizeOpportunityDueDate(patch.dueDate);
+  }
+
+  if (hasDueDate && !hasDeadline) {
+    normalizedPatch.deadline = normalizedPatch.dueDate || "待定";
+  } else if (hasDeadline && !hasDueDate) {
+    normalizedPatch.dueDate = inferDueDateFromText(normalizedPatch.deadline);
+  }
+
+  return normalizedPatch;
+};
+
 export const getOpportunityDueDate = (opportunity) => opportunity?.dueDate || inferDueDateFromText(opportunity?.deadline);
 
 export const getOpportunityDaysUntilDue = (opportunity) => {
@@ -193,6 +219,26 @@ export const getWeeklyWindow = (weeklyPlan, now = new Date()) => {
 export const isSubmittedTimelineEvent = (event) =>
   event?.status === "done" && submittedTimelinePattern.test(`${event.title ?? ""} ${event.detail ?? ""}`);
 
+export const isSubmittedOrLaterStatus = (status) => submittedStatuses.includes(status);
+
+const hasSubmittedOpportunityStatus = (opportunity) =>
+  isSubmittedOrLaterStatus(opportunity?.status) ||
+  (opportunity?.previousStatus ? isSubmittedOrLaterStatus(opportunity.previousStatus) : false);
+
+export const shouldRecordSubmittedTransition = (opportunity, nextStatus) => {
+  if (!isSubmittedOrLaterStatus(nextStatus)) return false;
+  if (hasSubmittedOpportunityStatus(opportunity)) return false;
+  return !(opportunity?.timeline ?? []).some(isSubmittedTimelineEvent);
+};
+
+export const createSubmittedTransitionEvent = ({ id, occurredAt = "Now", fromStatus = "TO APPLY", toStatus }) => ({
+  id,
+  occurredAt,
+  title: "已投递",
+  detail: `从${statusLabel[fromStatus] || fromStatus}直接更新到${statusLabel[toStatus] || toStatus}，补记投递完成`,
+  status: "done",
+});
+
 const getTimelineEventOccurredAt = (event, now = new Date()) => {
   const occurredAtText = String(event?.occurredAt ?? "").trim();
   const explicitTitleDate = parseExplicitDateLike(event?.title ?? "", now);
@@ -201,19 +247,27 @@ const getTimelineEventOccurredAt = (event, now = new Date()) => {
   return parseDateLike(occurredAtText, now) ?? explicitTitleDate;
 };
 
+const opportunityCreatedTimelinePattern = /写入岗位推进|确认进入岗位推进|确认岗位信息|生成岗位草稿|确认岗位草稿|新增岗位|岗位已创建/i;
+
+const isOpportunityCreatedTimelineEvent = (event) =>
+  event?.status === "done" && opportunityCreatedTimelinePattern.test(`${event.title ?? ""} ${event.detail ?? ""}`);
+
 export const getOpportunitySubmittedAt = (opportunity, now = new Date()) => {
-  const hasSubmittedStatus =
-    submittedStatuses.includes(opportunity.status) ||
-    (opportunity.previousStatus ? submittedStatuses.includes(opportunity.previousStatus) : false) ||
-    opportunity.status === "ENDED";
-  if (!hasSubmittedStatus) return null;
+  if (!hasSubmittedOpportunityStatus(opportunity)) return null;
 
   const submittedEvents = (opportunity.timeline ?? [])
     .filter(isSubmittedTimelineEvent)
     .map((event) => getTimelineEventOccurredAt(event, now))
     .filter(Boolean)
     .sort((left, right) => left.getTime() - right.getTime());
-  return submittedEvents[0] ?? null;
+  if (submittedEvents[0]) return submittedEvents[0];
+
+  const createdEvents = (opportunity.timeline ?? [])
+    .filter(isOpportunityCreatedTimelineEvent)
+    .map((event) => getTimelineEventOccurredAt(event, now))
+    .filter(Boolean)
+    .sort((left, right) => left.getTime() - right.getTime());
+  return createdEvents[0] ?? null;
 };
 
 export const countWeeklySubmittedApplications = (opportunities = [], weeklyPlan, now = new Date()) => {

@@ -812,11 +812,19 @@ button:focus-visible {
   line-height: 30px;
 }
 
-.today-action-open {
+.today-action-main {
   grid-column: 2;
   grid-row: 1;
+  min-width: 0;
   display: grid;
-  grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-content: start;
+}
+
+.today-action-open {
+  width: fit-content;
+  display: inline-grid;
+  grid-template-columns: auto auto auto;
   gap: 10px;
   align-content: start;
   align-items: center;
@@ -842,13 +850,113 @@ button:focus-visible {
   align-self: center;
 }
 
-.today-action-open h3 {
-  grid-column: 1 / -1;
-  margin-top: 4px;
+.today-action-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.today-action-title-card {
+  margin: 0;
   color: var(--text-display);
   font-size: clamp(17px, 1.6vw, 21px);
   line-height: 1.25;
   letter-spacing: -0.02em;
+}
+
+.today-action-title-open {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: left;
+}
+
+.today-action-title-open span {
+  overflow-wrap: anywhere;
+}
+
+.today-action-title-open:hover,
+.today-action-title-open:focus-visible {
+  color: var(--text-display);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.today-action-title-open:focus-visible,
+.today-action-title-edit:focus-visible,
+.today-title-save-button:focus-visible,
+.today-title-cancel-button:focus-visible {
+  outline: 2px solid var(--button-focus-ring);
+  outline-offset: 2px;
+}
+
+.today-action-title-edit {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.today-action-title-edit:hover {
+  border-color: color-mix(in srgb, var(--border-visible) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 70%, var(--text-display) 3%);
+  color: var(--text-secondary);
+}
+
+.today-title-editor {
+  min-width: min(100%, 260px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.today-title-editor input {
+  min-width: min(100%, 220px);
+  flex: 1 1 180px;
+  height: 32px;
+  border: 1px solid var(--border-visible);
+  border-radius: 10px;
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--text-display);
+  font: inherit;
+}
+
+.today-title-save-button,
+.today-title-cancel-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.today-title-save-button {
+  border-color: color-mix(in srgb, var(--interactive) 34%, var(--border));
+  color: var(--text-display);
+}
+
+.today-title-save-button:hover,
+.today-title-cancel-button:hover {
+  border-color: var(--border-visible);
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--text-display) 3%);
 }
 
 .today-action-open p {
@@ -1308,10 +1416,25 @@ button:focus-visible {
   color: var(--text-secondary);
   font-size: 10px;
   font-style: normal;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .today-history-day.outside-month {
   opacity: 0.42;
+}
+
+.today-history-day.future-day {
+  border-color: color-mix(in srgb, var(--border) 44%, transparent);
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.34;
+}
+
+.today-history-day.future-day span,
+.today-history-day.future-day em {
+  color: var(--text-muted);
 }
 
 .today-history-day:hover,
@@ -1319,6 +1442,12 @@ button:focus-visible {
 .active-history-day {
   border-color: var(--border-visible);
   background: color-mix(in srgb, var(--surface-raised) 78%, var(--text-display) 4%);
+}
+
+.today-history-day.future-day:hover,
+.today-history-day.future-day:focus-visible {
+  border-color: color-mix(in srgb, var(--border) 44%, transparent);
+  background: color-mix(in srgb, var(--surface) 34%, transparent);
 }
 
 .today-history-day:focus-visible {
@@ -1359,8 +1488,9 @@ button:focus-visible {
 .today-history-detail-header h3 {
   margin-top: 4px;
   color: var(--text-display);
-  font-size: 22px;
+  font-size: clamp(18px, 2.4vw, 22px);
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
 .today-history-stats {

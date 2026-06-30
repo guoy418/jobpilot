@@ -13,8 +13,8 @@ const validTodayActionPages = new Set<Page>(["home", "opportunities", "opportuni
 
 const numberWithFallback = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 
-export const todayActionKey = (action: Pick<TodayAction, "page" | "title" | "targetId"> & Partial<Pick<TodayAction, "source" | "taskId">>) =>
-  `${action.source ?? action.page}:${action.taskId ?? action.targetId ?? action.title}`;
+export const todayActionKey = (action: Pick<TodayAction, "page" | "title" | "targetId"> & Partial<Pick<TodayAction, "source" | "taskId" | "actionKey">>) =>
+  action.actionKey ?? `${action.source ?? action.page}:${action.taskId ?? action.targetId ?? action.title}`;
 
 export const todayActionSourceLabel = (action: TodayAction) => {
   if (action.source === "opportunity") return "岗位";
@@ -68,6 +68,7 @@ export const normalizeTodayActions = (actions: ApiTodayAction[] | null, fallback
       completionOutcome: action.completionOutcome,
       targetId: action.targetId,
       taskId: action.taskId,
+      actionKey: action.actionKey,
     });
     return items;
   }, []);

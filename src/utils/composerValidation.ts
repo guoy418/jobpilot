@@ -1,4 +1,5 @@
 import type { ModuleComposer, ModuleComposerDraft, ModuleComposerSource } from "../types";
+import { extractJobLinkFromSource } from "./composerSource";
 
 type AiProvider = "none" | "openai" | "anthropic" | "custom" | string;
 
@@ -48,8 +49,9 @@ export const composerValidationMessage = (result: ComposerValidationResult) => {
   return [firstError.message, firstError.hint].filter(Boolean).join(" ");
 };
 
-export const validateOpportunityComposerDraft = (draft: ModuleComposerDraft, _source: ModuleComposerSource): ComposerValidationResult => {
+export const validateOpportunityComposerDraft = (draft: ModuleComposerDraft, source: ModuleComposerSource): ComposerValidationResult => {
   const errors: ComposerValidationError[] = [];
+  const hasRecruitmentLink = Boolean(extractJobLinkFromSource(source));
   if (isPlaceholderText(draft.company, ["待填写公司"])) {
     errors.push({
       field: "company",
@@ -64,7 +66,7 @@ export const validateOpportunityComposerDraft = (draft: ModuleComposerDraft, _so
       hint: "可以用招聘页标题，或先写一个可识别的方向，例如「前端实习生」。",
     });
   }
-  if (!text(draft.sourceText)) {
+  if (!hasRecruitmentLink && !text(draft.sourceText)) {
     errors.push({
       field: "sourceText",
       message: "请补充岗位描述。",

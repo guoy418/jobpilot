@@ -3,7 +3,10 @@ import type { TodayAction } from "../selectors";
 import type { TodayActionHistoryItem, TodayActionHistoryStatus, TodayCreatedRecordInput } from "../types";
 import { localDateKey } from "../utils/date";
 import {
+  fillMissingTodayActionHistoryDates,
+  mergeTodayActionHistoryItems,
   parseTodayActionHistory,
+  pruneMissingTodayShownActionHistoryItems,
   recordShownTodayActions,
   recordTodayActionResolution,
   recordTodayCreatedRecord,
@@ -18,18 +21,68 @@ const readHistory = () => {
 
 const writeHistory = (items: TodayActionHistoryItem[]) => {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(todayActionHistoryStorageKey, JSON.stringify(items));
+  const storedItems = readHistory();
+  const mergedItems = pruneMissingTodayShownActionHistoryItems(mergeTodayActionHistoryItems(storedItems, items), items);
+  window.localStorage.setItem(todayActionHistoryStorageKey, JSON.stringify(mergedItems));
+};
+
+const clampHistoryDateToToday = (dateKey: string) => {
+  const todayDateKey = localDateKey();
+  return dateKey <= todayDateKey ? dateKey : todayDateKey;
 };
 
 export function useTodayActionHistory(actions: TodayAction[]) {
   const [historyItems, setHistoryItems] = useState<TodayActionHistoryItem[]>(readHistory);
-  const todayActionSignature = useMemo(() => actions.map(todayActionKey).join("|"), [actions]);
+  const [currentDateKey, setCurrentDateKey] = useState(() => localDateKey());
+  const todayActionSignature = useMemo(
+    () =>
+      actions
+        .map((action) =>
+          [
+            todayActionKey(action),
+            action.source,
+            action.sourceLabel,
+            action.title,
+            action.detail,
+            action.level,
+            action.targetId,
+            action.taskId,
+          ].join("|"),
+        )
+        .join("\n"),
+    [actions],
+  );
 
   useEffect(() => {
-    const date = localDateKey();
+    if (typeof window === "undefined") return;
+
+    const refreshCurrentDateKey = () => {
+      setCurrentDateKey((dateKey) => {
+        const nextDateKey = localDateKey();
+        return nextDateKey === dateKey ? dateKey : nextDateKey;
+      });
+    };
+    const intervalId = window.setInterval(refreshCurrentDateKey, 60 * 1000);
+
+    window.addEventListener("focus", refreshCurrentDateKey);
+    document.addEventListener("visibilitychange", refreshCurrentDateKey);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshCurrentDateKey);
+      document.removeEventListener("visibilitychange", refreshCurrentDateKey);
+    };
+  }, []);
+
+  useEffect(() => {
     const timestamp = new Date().toISOString();
-    setHistoryItems((items) => recordShownTodayActions(items, actions, date, timestamp));
-  }, [todayActionSignature]);
+    setHistoryItems((items) => {
+      const safeDateKey = clampHistoryDateToToday(currentDateKey);
+      const latestItems = mergeTodayActionHistoryItems(readHistory(), items);
+      const carriedHistory = fillMissingTodayActionHistoryDates(latestItems, actions, safeDateKey, timestamp);
+      return recordShownTodayActions(carriedHistory, actions, safeDateKey, timestamp);
+    });
+  }, [currentDateKey, todayActionSignature]);
 
   useEffect(() => {
     try {
@@ -40,15 +93,15 @@ export function useTodayActionHistory(actions: TodayAction[]) {
   }, [historyItems]);
 
   const recordResolved = (action: TodayAction, status: Exclude<TodayActionHistoryStatus, "shown">) => {
-    const date = localDateKey();
     const timestamp = new Date().toISOString();
-    setHistoryItems((items) => recordTodayActionResolution(items, action, status, date, timestamp));
+    setHistoryItems((items) =>
+      recordTodayActionResolution(mergeTodayActionHistoryItems(readHistory(), items), action, status, clampHistoryDateToToday(currentDateKey), timestamp),
+    );
   };
 
   const recordCreated = (record: TodayCreatedRecordInput) => {
-    const date = localDateKey();
     const timestamp = new Date().toISOString();
-    setHistoryItems((items) => recordTodayCreatedRecord(items, record, date, timestamp));
+    setHistoryItems((items) => recordTodayCreatedRecord(mergeTodayActionHistoryItems(readHistory(), items), record, clampHistoryDateToToday(currentDateKey), timestamp));
   };
 
   return {
