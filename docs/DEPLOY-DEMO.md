@@ -7,7 +7,7 @@
 ## 本地先验证
 
 ```bash
-cd interview-tool-handoff-v0.7
+cd 你保存项目的目录/jobpilot
 
 # 构建演示包，并检查不会带上本地 API / SQLite / server/data
 npm run demo:check
@@ -41,12 +41,12 @@ npm run dev:local    # 同时启动本地 API + 前端，使用个人 SQLite
 
 适合「不买域名，只要一个公开演示链接」。
 
-1. 在 GitHub 新建仓库，例如 `jobpilot-demo`。
+1. 在 GitHub 新建仓库，例如 `jobpilot`。
 2. 把本项目推到该仓库的 `main` 分支。
 3. 打开仓库 Settings → Pages。
 4. Source 选择 **GitHub Actions**。
 5. 等 Actions 里的 **Deploy public demo** 跑绿。
-6. 打开 `https://你的用户名.github.io/仓库名/`，例如 `https://yourname.github.io/jobpilot-demo/`。
+6. 打开 `https://你的用户名.github.io/仓库名/`，例如 `https://yourname.github.io/jobpilot/`。
 
 项目已包含 `.github/workflows/deploy-demo.yml`。它会在每次 push 到 `main` 时自动：
 
@@ -61,7 +61,7 @@ npm run dev:local    # 同时启动本地 API + 前端，使用个人 SQLite
 
 1. 把本仓库推到 GitHub。
 2. [vercel.com](https://vercel.com) → Import 项目。
-3. Root Directory：若 monorepo，填 `.../interview-tool-handoff-v0.7`。
+3. Root Directory：若 monorepo，填项目所在目录，例如 `jobpilot`。
 4. Build Command：`npm run demo:check`
 5. Output Directory：`dist`
 6. 部署完成后在 Vercel 里绑定你买的域名（DNS 按提示加 CNAME）。
@@ -102,7 +102,7 @@ npm run dev:local    # 同时启动本地 API + 前端，使用个人 SQLite
 
 部署完成后使用例如：
 
-- `https://你的用户名.github.io/jobpilot-demo/`
+- `https://你的用户名.github.io/jobpilot/`
 - `https://jobpilot.你的域名.com`
 - 或 Vercel 默认的 `https://xxx.vercel.app`
 
