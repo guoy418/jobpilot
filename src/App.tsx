@@ -391,7 +391,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const { theme, toggleTheme } = useThemePreference();
   const [libraryNavOpen, setLibraryNavOpen] = useState(true);
-  const [todayActionView, setTodayActionView] = useState<"priority" | "source">("priority");
+  const [todayActionView, setTodayActionView] = useState<"priority" | "source">("source");
   const [showMoreTodayActions, setShowMoreTodayActions] = useState(false);
   const [todayHistoryOpen, setTodayHistoryOpen] = useState(false);
   const [editingTodayActionKey, setEditingTodayActionKey] = useState("");
@@ -468,7 +468,7 @@ function App() {
     setComposerParsing,
     setComposerDraft,
   } = useModuleComposerController({
-    initialResumeId: resumeVersions[0]?.id ?? "",
+    initialResumeId: "",
     initialOpportunityId: seedOpportunities[0]?.id ?? "",
     onMessage: setSystemMessage,
   });
@@ -819,7 +819,8 @@ function App() {
     setSystemMessage(`已打开${label}`);
   };
 
-  const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") => openComposerDialog(kind, resumeList[0]?.id ?? "", linkedOpportunityId);
+  const openComposer = (kind: ModuleComposer, linkedOpportunityId = "") =>
+    openComposerDialog(kind, kind === "opportunity" ? "" : resumeList[0]?.id ?? "", linkedOpportunityId);
 
   const runComposerParse = async () => {
     if (!composer || composerParsing) return;
@@ -860,7 +861,7 @@ function App() {
     }
 
     const parseText = `${sourceInputText} ${fileBaseName(fileName)}`.trim();
-    const defaultResumeId = composerDraft.resumeId || resumeList[0]?.id || "";
+    const selectedResumeId = composerDraft.resumeId;
     const linkedOpportunity = opportunities.find((item) => item.id === composerDraft.linkedOpportunityId);
 
     if (composer === "interview" && rawText.startsWith("{")) {
@@ -928,8 +929,12 @@ function App() {
             match: nextMatch,
             priority: nextPriority,
             action: nextAction,
-            resumeId: draft.resumeId || defaultResumeId,
-            nextAction: mergeParsedDraftValue(draft.nextAction, `确认 ${getResumeName(defaultResumeId)} 后投递`, ["补齐信息后推进"]),
+            resumeId: draft.resumeId,
+            nextAction: mergeParsedDraftValue(
+              draft.nextAction,
+              selectedResumeId ? `确认 ${getResumeName(selectedResumeId)} 后投递` : "补齐信息后推进",
+              ["补齐信息后推进"],
+            ),
             sourceLabel: mergeParsedDraftValue(draft.sourceLabel, sourceLabel, ["模块内新增"]),
             sourceText: mergeParsedDraftValue(draft.sourceText, parsedSourceText),
           };
@@ -1069,8 +1074,12 @@ function App() {
               match: nextMatch,
               priority: nextPriority,
               action: nextAction,
-              resumeId: draft.resumeId || defaultResumeId,
-              nextAction: mergeParsedDraftValue(draft.nextAction, parsed.nextAction || `确认 ${getResumeName(defaultResumeId)} 后投递`, ["补齐信息后推进"]),
+              resumeId: draft.resumeId,
+              nextAction: mergeParsedDraftValue(
+                draft.nextAction,
+                parsed.nextAction || (selectedResumeId ? `确认 ${getResumeName(selectedResumeId)} 后投递` : "补齐信息后推进"),
+                ["补齐信息后推进"],
+              ),
               sourceLabel: mergeParsedDraftValue(draft.sourceLabel, parsed.sourceLabel, ["模块内新增"]),
               sourceText: mergeParsedDraftValue(draft.sourceText, parsed.sourceText),
             };
@@ -2088,7 +2097,7 @@ function App() {
       deadline: composerDraft.dueDate || composerDraft.deadline.trim(),
       dueDate,
       note: composerDraft.note.trim(),
-      resumeId: composerDraft.resumeId || resumeList[0]?.id || "",
+      resumeId: composerDraft.resumeId,
       nextAction: composerDraft.nextAction.trim() || "补齐材料后投递",
       jdSummary: recruitmentLink || composerDraft.sourceText.trim() || "从上传材料整理出的岗位记录。",
       jdText: composerDraft.sourceText.trim(),
@@ -2988,19 +2997,19 @@ function App() {
                     <div className="today-view-toggle" role="group" aria-label="今日行动查看方式">
                       <button
                         type="button"
-                        className={todayActionView === "priority" ? "active-today-view" : ""}
-                        aria-pressed={todayActionView === "priority"}
-                        onClick={() => setTodayActionView("priority")}
-                      >
-                        系统推荐
-                      </button>
-                      <button
-                        type="button"
                         className={todayActionView === "source" ? "active-today-view" : ""}
                         aria-pressed={todayActionView === "source"}
                         onClick={() => setTodayActionView("source")}
                       >
                         来源分组
+                      </button>
+                      <button
+                        type="button"
+                        className={todayActionView === "priority" ? "active-today-view" : ""}
+                        aria-pressed={todayActionView === "priority"}
+                        onClick={() => setTodayActionView("priority")}
+                      >
+                        系统推荐
                       </button>
                     </div>
                   </div>
