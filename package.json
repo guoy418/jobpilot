@@ -24,7 +24,9 @@
     "test:api-persistence": "node server/persistence-check.mjs",
     "test:e2e:local": "node tools/local_e2e.cjs",
     "test:e2e": "playwright test",
-    "test:e2e:install": "playwright install chromium"
+    "test:e2e:install": "playwright install chromium",
+    "publish": "powershell.exe -ExecutionPolicy Bypass -File ./tools/publish.ps1",
+    "publish:all": "powershell.exe -ExecutionPolicy Bypass -File ./tools/publish.ps1 -IncludeUntracked"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
