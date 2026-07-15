@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { BACKUP_SCHEMA_VERSION } from "../src/utils/backup";
 
 const openNav = async (page: Page, name: string) => {
-  await page.getByRole("button", { name }).click();
+  await page.locator("aside.sidebar").getByRole("button", { name, exact: true }).click();
 };
 
 test.beforeEach(async ({ page }) => {

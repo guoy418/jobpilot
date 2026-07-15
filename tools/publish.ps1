@@ -83,7 +83,7 @@ $ignoredLocalUntracked = @(
 
 $untrackedPaths = @(
   $statusLines |
-    Where-Object { $_ -like "?? *" } |
+    Where-Object { $_ -match '^\?\?\s' } |
     ForEach-Object { $_.Substring(3).Trim() }
 )
 
