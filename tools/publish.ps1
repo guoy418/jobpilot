@@ -46,12 +46,11 @@ function Get-AheadCount {
     return 0
   }
 
-  $parts = ($counts[0] -split "\s+") | Where-Object { $_ }
-  if ($parts.Count -lt 2) {
-    return 0
+  if ($counts[0] -match '^\s*(\d+)\s+(\d+)\s*$') {
+    return [int]$Matches[2]
   }
 
-  return [int]$parts[1]
+  return 0
 }
 
 $repoRoot = Get-GitOutput -Args @("rev-parse", "--show-toplevel")
@@ -115,7 +114,7 @@ if ($IncludeUntracked) {
   Invoke-Git -Args @("add", "-u")
 }
 
-$stagedFiles = Get-GitOutput -Args @("diff", "--cached", "--name-only")
+$stagedFiles = @(Get-GitOutput -Args @("diff", "--cached", "--name-only") | Where-Object { $_ -and $_.Trim() })
 if (-not $stagedFiles -or $stagedFiles.Count -eq 0) {
   if ($aheadCount -gt 0) {
     Write-Host "No new staged changes. Pushing $aheadCount existing local commit(s)..."
