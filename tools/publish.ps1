@@ -40,13 +40,39 @@ function Get-GitOutput {
   return @($output)
 }
 
+function Get-AheadCount {
+  $counts = Get-GitOutput -Args @("rev-list", "--left-right", "--count", "origin/main...HEAD")
+  if (-not $counts -or -not $counts[0]) {
+    return 0
+  }
+
+  $parts = ($counts[0] -split "\s+") | Where-Object { $_ }
+  if ($parts.Count -lt 2) {
+    return 0
+  }
+
+  return [int]$parts[1]
+}
+
 $repoRoot = Get-GitOutput -Args @("rev-parse", "--show-toplevel")
 if (-not $repoRoot) {
   throw "Current folder is not a git repository."
 }
 
 $statusLines = Get-GitOutput -Args @("status", "--porcelain=v1")
+$aheadCount = Get-AheadCount
 if (-not $statusLines -or $statusLines.Count -eq 0) {
+  if ($aheadCount -gt 0) {
+    Write-Host "No new working tree changes. Pushing $aheadCount existing local commit(s)..."
+    if ($SkipPush) {
+      Write-Host "Push skipped."
+      exit 0
+    }
+    Invoke-Git -Args @("push", "origin", "main")
+    Write-Host "Publish complete."
+    exit 0
+  }
+
   Write-Host "No changes to publish."
   exit 0
 }
@@ -91,6 +117,17 @@ if ($IncludeUntracked) {
 
 $stagedFiles = Get-GitOutput -Args @("diff", "--cached", "--name-only")
 if (-not $stagedFiles -or $stagedFiles.Count -eq 0) {
+  if ($aheadCount -gt 0) {
+    Write-Host "No new staged changes. Pushing $aheadCount existing local commit(s)..."
+    if ($SkipPush) {
+      Write-Host "Push skipped."
+      exit 0
+    }
+    Invoke-Git -Args @("push", "origin", "main")
+    Write-Host "Publish complete."
+    exit 0
+  }
+
   Write-Host "No staged changes to commit."
   exit 0
 }
