@@ -41,13 +41,13 @@ function Get-GitOutput {
 }
 
 function Get-AheadCount {
-  $counts = Get-GitOutput -Args @("rev-list", "--left-right", "--count", "origin/main...HEAD")
-  if (-not $counts -or -not $counts[0]) {
+  $branchStatus = Get-GitOutput -Args @("status", "-sb")
+  if (-not $branchStatus -or -not $branchStatus[0]) {
     return 0
   }
 
-  if ($counts[0] -match '^\s*(\d+)\s+(\d+)\s*$') {
-    return [int]$Matches[2]
+  if ($branchStatus[0] -match '\[ahead\s+(\d+)\]') {
+    return [int]$Matches[1]
   }
 
   return 0
