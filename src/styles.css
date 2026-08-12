@@ -2940,8 +2940,8 @@ small {
 .opportunity-filter-groups {
   display: grid;
   gap: 12px;
-  flex: 1 1 auto;
-  min-width: min(100%, 560px);
+  flex: 0 1 980px;
+  min-width: 0;
 }
 
 .opportunity-scope-row {
@@ -3023,11 +3023,19 @@ small {
   opacity: 1;
 }
 
+.opportunity-filter-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .opportunity-filter-controls {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
   gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .opportunity-select-wrap,
@@ -3064,18 +3072,18 @@ small {
 
 .opportunity-select-label,
 .opportunity-company-filter span {
-  color: var(--text-secondary);
-  font-family: "Space Mono", "JetBrains Mono", monospace;
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--text-display);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
   text-transform: uppercase;
 }
 
 .opportunity-select-trigger strong {
   flex: 1;
   overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3096,8 +3104,10 @@ small {
   border: 0;
   outline: 0;
   background: transparent;
-  color: var(--text-primary);
-  font: inherit;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .opportunity-company-filter.is-open {
@@ -3171,13 +3181,13 @@ small {
 
 @media (max-width: 1100px) {
   .opportunity-filter-controls {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 720px) {
   .opportunity-filter-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -3207,7 +3217,8 @@ small {
 }
 
 .opportunity-clear-filters {
-  justify-self: start;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .view-toggle {
@@ -3215,6 +3226,7 @@ small {
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
+  flex: 0 0 auto;
 }
 
 .view-mode-switch {

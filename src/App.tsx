@@ -270,7 +270,7 @@ const opportunityTagOptions: Array<{ value: OpportunityTagFilter; label: string 
   { value: "DUE_SOON", label: "快截止" },
 ];
 
-type OpportunityFilterMenu = "priority" | "status" | "company" | "tags" | null;
+type OpportunityFilterMenu = "priority" | "status" | "company" | "title" | "tags" | null;
 
 function OpportunityMultiSelect({
   label,
@@ -313,7 +313,8 @@ function OpportunityMultiSelect({
   );
 }
 
-function OpportunityCompanySelect({
+function OpportunityAutocomplete({
+  label,
   value,
   options,
   open,
@@ -321,6 +322,7 @@ function OpportunityCompanySelect({
   onOpen,
   onSelect,
 }: {
+  label: string;
   value: string;
   options: string[];
   open: boolean;
@@ -329,35 +331,35 @@ function OpportunityCompanySelect({
   onSelect: (value: string) => void;
 }) {
   const normalizedValue = value.trim().toLowerCase();
-  const visibleOptions = options.filter((company) => !normalizedValue || company.toLowerCase().includes(normalizedValue));
+  const visibleOptions = options.filter((option) => !normalizedValue || option.toLowerCase().includes(normalizedValue));
 
   return (
-    <div className={`opportunity-company-filter ${open ? "is-open" : ""}`}>
-      <span>公司</span>
+    <div className={`opportunity-autocomplete opportunity-company-filter ${open ? "is-open" : ""}`}>
+      <span>{label}</span>
       <input
         value={value}
         onFocus={onOpen}
         onChange={(event) => onChange(event.target.value)}
         placeholder="输入或选择"
-        aria-label="按公司筛选"
+        aria-label={`按${label}筛选`}
       />
       <ChevronDown size={14} />
       {open ? (
-        <div className="opportunity-company-menu" role="listbox" aria-label="公司选项">
+        <div className="opportunity-company-menu" role="listbox" aria-label={`${label}选项`}>
           {visibleOptions.length > 0 ? (
-            visibleOptions.map((company) => (
+            visibleOptions.map((option) => (
               <button
                 type="button"
-                key={company}
-                className={company === value ? "active-option" : ""}
+                key={option}
+                className={option === value ? "active-option" : ""}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => onSelect(company)}
+                onClick={() => onSelect(option)}
               >
-                {company}
+                {option}
               </button>
             ))
           ) : (
-            <span className="opportunity-company-empty">没有匹配的公司</span>
+            <span className="opportunity-company-empty">没有匹配的选项</span>
           )}
         </div>
       ) : null}
@@ -516,6 +518,7 @@ function App() {
   const [opportunityStatusFilters, setOpportunityStatusFilters] = useState<OpportunityStatusFilter[]>([]);
   const [opportunityTagFilters, setOpportunityTagFilters] = useState<OpportunityTagFilter[]>([]);
   const [opportunityCompanyFilter, setOpportunityCompanyFilter] = useState("");
+  const [opportunityTitleFilter, setOpportunityTitleFilter] = useState("");
   const [openOpportunityFilter, setOpenOpportunityFilter] = useState<OpportunityFilterMenu>(null);
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [answerCards, setAnswerCards] = useState<AnswerCard[]>(baseAnswerCards);
@@ -869,6 +872,7 @@ function App() {
     setOpportunityStatusFilters([]);
     setOpportunityTagFilters([]);
     setOpportunityCompanyFilter("");
+    setOpportunityTitleFilter("");
     setOpenOpportunityFilter(null);
     setOpportunityPage(0);
   };
@@ -876,6 +880,12 @@ function App() {
   const clearOpportunitySearchAndFilters = () => {
     setQuery("");
     setOpportunityVisibility("ACTIVE");
+    resetOpportunityFilters();
+    setSystemMessage("已清除岗位筛选");
+  };
+
+  const clearOpportunityFiltersOnly = () => {
+    setQuery("");
     resetOpportunityFilters();
     setSystemMessage("已清除岗位筛选");
   };
@@ -890,6 +900,10 @@ function App() {
     () => Array.from(new Set(opportunities.map((item) => item.company.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [opportunities],
   );
+  const opportunityTitleOptions = useMemo(
+    () => Array.from(new Set(opportunities.map((item) => item.title.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [opportunities],
+  );
 
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
@@ -897,6 +911,7 @@ function App() {
       const haystack = `${item.title} ${item.company} ${item.city} ${item.nextAction} ${resumeName}`.toLowerCase();
       const matchesQuery = haystack.includes(normalizedQuery);
       const matchesCompany = !opportunityCompanyFilter.trim() || item.company.toLowerCase().includes(opportunityCompanyFilter.trim().toLowerCase());
+      const matchesTitle = !opportunityTitleFilter.trim() || item.title.toLowerCase().includes(opportunityTitleFilter.trim().toLowerCase());
       const matchesVisibility =
         opportunityVisibility === "ALL" ||
         (opportunityVisibility === "ACTIVE" && isActiveOpportunityStatus(item.status)) ||
@@ -909,15 +924,15 @@ function App() {
         if (tag === "HIGH_MATCH") return item.match === "HIGH";
         return isOpportunityDueSoon(item);
       });
-      return matchesVisibility && matchesPriority && matchesStatus && matchesTags && matchesCompany && matchesQuery;
+      return matchesVisibility && matchesPriority && matchesStatus && matchesTags && matchesCompany && matchesTitle && matchesQuery;
     });
-  }, [opportunities, normalizedQuery, opportunityCompanyFilter, opportunityPriorityFilters, opportunityStatusFilters, opportunityTagFilters, resumeList, opportunityVisibility]);
+  }, [opportunities, normalizedQuery, opportunityCompanyFilter, opportunityPriorityFilters, opportunityStatusFilters, opportunityTagFilters, opportunityTitleFilter, resumeList, opportunityVisibility]);
   const opportunityList = paginateList(filteredOpportunities, opportunityPage, OPPORTUNITY_TABLE_PAGE_SIZE);
   const visibleTableOpportunities = opportunityList.visible;
   const opportunityPageCount = opportunityList.pageCount;
   const safeOpportunityPage = opportunityList.safePage;
   const hasOpportunitySearchOrFilters =
-    normalizedQuery.length > 0 || opportunityCompanyFilter.trim().length > 0 || opportunityVisibility !== "ACTIVE" || opportunityPriorityFilters.length > 0 || opportunityStatusFilters.length > 0 || opportunityTagFilters.length > 0;
+    normalizedQuery.length > 0 || opportunityCompanyFilter.trim().length > 0 || opportunityTitleFilter.trim().length > 0 || opportunityPriorityFilters.length > 0 || opportunityStatusFilters.length > 0 || opportunityTagFilters.length > 0;
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -3449,8 +3464,10 @@ function App() {
                       </button>
                     </div>
                   </div>
-                  <div ref={opportunityFilterControlsRef} className="opportunity-filter-controls" aria-label="岗位筛选">
-                    <OpportunityCompanySelect
+                  <div ref={opportunityFilterControlsRef} className="opportunity-filter-controls-row">
+                    <div className="opportunity-filter-controls" aria-label="岗位筛选">
+                    <OpportunityAutocomplete
+                      label="公司"
                       value={opportunityCompanyFilter}
                       options={opportunityCompanyOptions}
                       open={openOpportunityFilter === "company"}
@@ -3461,6 +3478,22 @@ function App() {
                       }}
                       onSelect={(value) => {
                         setOpportunityCompanyFilter(value);
+                        setOpenOpportunityFilter(null);
+                        setOpportunityPage(0);
+                      }}
+                    />
+                    <OpportunityAutocomplete
+                      label="岗位"
+                      value={opportunityTitleFilter}
+                      options={opportunityTitleOptions}
+                      open={openOpportunityFilter === "title"}
+                      onOpen={() => setOpenOpportunityFilter("title")}
+                      onChange={(value) => {
+                        setOpportunityTitleFilter(value);
+                        setOpportunityPage(0);
+                      }}
+                      onSelect={(value) => {
+                        setOpportunityTitleFilter(value);
                         setOpenOpportunityFilter(null);
                         setOpportunityPage(0);
                       }}
@@ -3489,12 +3522,13 @@ function App() {
                       onOpen={() => setOpenOpportunityFilter((current) => (current === "tags" ? null : "tags"))}
                       onToggle={(value) => toggleOpportunityTagFilter(value as OpportunityTagFilter)}
                     />
+                    </div>
+                    {hasOpportunitySearchOrFilters ? (
+                      <button type="button" className="ghost-button compact-button opportunity-clear-filters" onClick={clearOpportunityFiltersOnly}>
+                        {normalizedQuery ? "清除搜索和筛选" : "清除筛选"}
+                      </button>
+                    ) : null}
                   </div>
-                  {hasOpportunitySearchOrFilters ? (
-                    <button type="button" className="ghost-button compact-button opportunity-clear-filters" onClick={clearOpportunitySearchAndFilters}>
-                      {normalizedQuery ? "清除搜索和筛选" : "清除筛选"}
-                    </button>
-                  ) : null}
                 </div>
                 <div className="view-toggle">
                   <button className="primary-chip" type="button" onClick={() => openComposer("opportunity")}>
