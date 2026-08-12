@@ -234,7 +234,8 @@ const interviewReviewJsonPrompt = `你是一名中文面试复盘教练。请根
 - questionType：可选 BEHAVIORAL / PROJECT / TECHNICAL / MOTIVATION / PRODUCT。`;
 
 type OpportunityVisibilityFilter = "ACTIVE" | "ENDED" | "ALL";
-type OpportunityPriorityFilter = "ALL" | OpportunityAction;
+type OpportunityPriorityFilter = OpportunityAction;
+type OpportunityStatusFilter = OpportunityStatus;
 type OpportunityTagFilter = "HIGH_PRIORITY" | "HIGH_MATCH" | "DUE_SOON";
 type PendingWeeklyPracticeTask = Omit<WeeklyTask, "id" | "status"> & { level: OpportunityAction };
 
@@ -253,17 +254,116 @@ const opportunityVisibilityOptions: Array<{ value: Extract<OpportunityVisibility
 ];
 
 const opportunityPriorityOptions: Array<{ value: OpportunityPriorityFilter; label: string }> = [
-  { value: "ALL", label: "全部" },
   { value: "P0", label: "P0" },
   { value: "P1", label: "P1" },
   { value: "P2", label: "P2" },
 ];
+
+const opportunityStatusOptions: Array<{ value: OpportunityStatusFilter; label: string }> = opportunityStatusFlow.map((value) => ({
+  value,
+  label: statusLabel[value],
+}));
 
 const opportunityTagOptions: Array<{ value: OpportunityTagFilter; label: string }> = [
   { value: "HIGH_PRIORITY", label: "高意愿" },
   { value: "HIGH_MATCH", label: "高匹配" },
   { value: "DUE_SOON", label: "快截止" },
 ];
+
+type OpportunityFilterMenu = "priority" | "status" | "company" | "tags" | null;
+
+function OpportunityMultiSelect({
+  label,
+  options,
+  selected,
+  open,
+  onToggle,
+  onOpen,
+}: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selected: string[];
+  open: boolean;
+  onToggle: (value: string) => void;
+  onOpen: () => void;
+}) {
+  const selectedLabel = selected.length === 0 ? "全部" : selected.length === 1 ? options.find((item) => item.value === selected[0])?.label ?? "已选择" : `${selected.length} 项已选`;
+
+  return (
+    <div className={`opportunity-select-wrap ${open ? "is-open" : ""}`}>
+      <button type="button" className="opportunity-select-trigger" aria-expanded={open} onClick={onOpen}>
+        <span className="opportunity-select-label">{label}</span>
+        <strong>{selectedLabel}</strong>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="opportunity-select-menu" role="listbox" aria-label={label} aria-multiselectable="true">
+          {options.map((option) => {
+            const active = selected.includes(option.value);
+            return (
+              <button type="button" key={option.value} className={active ? "active-option" : ""} aria-selected={active} onClick={() => onToggle(option.value)}>
+                <span className="opportunity-option-check">{active ? "✓" : ""}</span>
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OpportunityCompanySelect({
+  value,
+  options,
+  open,
+  onChange,
+  onOpen,
+  onSelect,
+}: {
+  value: string;
+  options: string[];
+  open: boolean;
+  onChange: (value: string) => void;
+  onOpen: () => void;
+  onSelect: (value: string) => void;
+}) {
+  const normalizedValue = value.trim().toLowerCase();
+  const visibleOptions = options.filter((company) => !normalizedValue || company.toLowerCase().includes(normalizedValue));
+
+  return (
+    <div className={`opportunity-company-filter ${open ? "is-open" : ""}`}>
+      <span>公司</span>
+      <input
+        value={value}
+        onFocus={onOpen}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="输入或选择"
+        aria-label="按公司筛选"
+      />
+      <ChevronDown size={14} />
+      {open ? (
+        <div className="opportunity-company-menu" role="listbox" aria-label="公司选项">
+          {visibleOptions.length > 0 ? (
+            visibleOptions.map((company) => (
+              <button
+                type="button"
+                key={company}
+                className={company === value ? "active-option" : ""}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => onSelect(company)}
+              >
+                {company}
+              </button>
+            ))
+          ) : (
+            <span className="opportunity-company-empty">没有匹配的公司</span>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const emptyEndOpportunityDraft = (): EndOpportunityDraft => ({
   reason: "REJECTED",
@@ -412,8 +512,11 @@ function App() {
   const [interviewView, setInterviewView] = useState<InterviewView>("list");
   const [answerView, setAnswerView] = useState<"list" | "detail">("list");
   const [opportunityVisibility, setOpportunityVisibility] = useState<OpportunityVisibilityFilter>("ACTIVE");
-  const [opportunityPriorityFilter, setOpportunityPriorityFilter] = useState<OpportunityPriorityFilter>("ALL");
+  const [opportunityPriorityFilters, setOpportunityPriorityFilters] = useState<OpportunityPriorityFilter[]>([]);
+  const [opportunityStatusFilters, setOpportunityStatusFilters] = useState<OpportunityStatusFilter[]>([]);
   const [opportunityTagFilters, setOpportunityTagFilters] = useState<OpportunityTagFilter[]>([]);
+  const [opportunityCompanyFilter, setOpportunityCompanyFilter] = useState("");
+  const [openOpportunityFilter, setOpenOpportunityFilter] = useState<OpportunityFilterMenu>(null);
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [answerCards, setAnswerCards] = useState<AnswerCard[]>(baseAnswerCards);
   const [answerCategories, setAnswerCategories] = useState<AnswerCategory[]>(baseAnswerCategories);
@@ -440,6 +543,18 @@ function App() {
   const endOpportunityDraftRef = useRef<EndOpportunityDraft>(emptyEndOpportunityDraft());
   const modalBackdropPointerStartedRef = useRef(false);
   const recordCreatedTodayRecordRef = useRef<(record: TodayCreatedRecordInput) => void>(() => undefined);
+  const opportunityFilterControlsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openOpportunityFilter) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!opportunityFilterControlsRef.current?.contains(event.target as Node)) {
+        setOpenOpportunityFilter(null);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [openOpportunityFilter]);
   const { aiSettings, updateAiSettings, resetAiSettings } = useAiSettings();
   const { apiMode, markApiOnline, markApiOffline, refreshApiHealth, useFallbackApiMode } = useApiModeController({ onMessage: setSystemMessage });
   const { apiDashboardSummary, apiTodayActions, replaceApiInsights, refreshApiInsights, invalidateApiInsights, invalidateTodayActions } = useApiInsights();
@@ -728,8 +843,17 @@ function App() {
       setSelectedAnswerCategoryId(uncategorizedAnswerCategoryId);
     }
   }, [answerCategoryById, selectedAnswerCategoryId]);
-  const selectOpportunityPriorityFilter = (nextFilter: OpportunityPriorityFilter) => {
-    setOpportunityPriorityFilter(nextFilter);
+  const toggleOpportunityPriorityFilter = (nextFilter: OpportunityPriorityFilter) => {
+    setOpportunityPriorityFilters((currentFilters) =>
+      currentFilters.includes(nextFilter) ? currentFilters.filter((item) => item !== nextFilter) : [...currentFilters, nextFilter],
+    );
+    setOpportunityPage(0);
+  };
+
+  const toggleOpportunityStatusFilter = (status: OpportunityStatusFilter) => {
+    setOpportunityStatusFilters((currentFilters) =>
+      currentFilters.includes(status) ? currentFilters.filter((item) => item !== status) : [...currentFilters, status],
+    );
     setOpportunityPage(0);
   };
 
@@ -740,12 +864,19 @@ function App() {
     setOpportunityPage(0);
   };
 
+  const resetOpportunityFilters = () => {
+    setOpportunityPriorityFilters([]);
+    setOpportunityStatusFilters([]);
+    setOpportunityTagFilters([]);
+    setOpportunityCompanyFilter("");
+    setOpenOpportunityFilter(null);
+    setOpportunityPage(0);
+  };
+
   const clearOpportunitySearchAndFilters = () => {
     setQuery("");
     setOpportunityVisibility("ACTIVE");
-    setOpportunityPriorityFilter("ALL");
-    setOpportunityTagFilters([]);
-    setOpportunityPage(0);
+    resetOpportunityFilters();
     setSystemMessage("已清除岗位筛选");
   };
 
@@ -755,31 +886,38 @@ function App() {
     setOpportunityPage(0);
   };
 
+  const opportunityCompanyOptions = useMemo(
+    () => Array.from(new Set(opportunities.map((item) => item.company.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [opportunities],
+  );
+
   const filteredOpportunities = useMemo(() => {
     return opportunities.filter((item) => {
       const resumeName = resumeList.find((resume) => resume.id === item.resumeId)?.name ?? item.resumeId;
       const haystack = `${item.title} ${item.company} ${item.city} ${item.nextAction} ${resumeName}`.toLowerCase();
       const matchesQuery = haystack.includes(normalizedQuery);
+      const matchesCompany = !opportunityCompanyFilter.trim() || item.company.toLowerCase().includes(opportunityCompanyFilter.trim().toLowerCase());
       const matchesVisibility =
         opportunityVisibility === "ALL" ||
         (opportunityVisibility === "ACTIVE" && isActiveOpportunityStatus(item.status)) ||
         (opportunityVisibility === "ENDED" && item.status === "ENDED");
       const computedAction = resolveOpportunityAction(item);
-      const matchesPriority = opportunityPriorityFilter === "ALL" || computedAction === opportunityPriorityFilter;
+      const matchesPriority = opportunityPriorityFilters.length === 0 || opportunityPriorityFilters.includes(computedAction);
+      const matchesStatus = opportunityStatusFilters.length === 0 || opportunityStatusFilters.includes(item.status);
       const matchesTags = opportunityTagFilters.every((tag) => {
         if (tag === "HIGH_PRIORITY") return item.priority === "A";
         if (tag === "HIGH_MATCH") return item.match === "HIGH";
         return isOpportunityDueSoon(item);
       });
-      return matchesVisibility && matchesPriority && matchesTags && matchesQuery;
+      return matchesVisibility && matchesPriority && matchesStatus && matchesTags && matchesCompany && matchesQuery;
     });
-  }, [opportunities, normalizedQuery, opportunityPriorityFilter, opportunityTagFilters, resumeList, opportunityVisibility]);
+  }, [opportunities, normalizedQuery, opportunityCompanyFilter, opportunityPriorityFilters, opportunityStatusFilters, opportunityTagFilters, resumeList, opportunityVisibility]);
   const opportunityList = paginateList(filteredOpportunities, opportunityPage, OPPORTUNITY_TABLE_PAGE_SIZE);
   const visibleTableOpportunities = opportunityList.visible;
   const opportunityPageCount = opportunityList.pageCount;
   const safeOpportunityPage = opportunityList.safePage;
   const hasOpportunitySearchOrFilters =
-    normalizedQuery.length > 0 || opportunityVisibility !== "ACTIVE" || opportunityPriorityFilter !== "ALL" || opportunityTagFilters.length > 0;
+    normalizedQuery.length > 0 || opportunityCompanyFilter.trim().length > 0 || opportunityVisibility !== "ACTIVE" || opportunityPriorityFilters.length > 0 || opportunityStatusFilters.length > 0 || opportunityTagFilters.length > 0;
 
   const linkedResumeOpportunities = selectedResume
     ? opportunities.filter((item) => item.resumeId === selectedResume.id || selectedResume.linkedOpportunityIds.includes(item.id))
@@ -2518,7 +2656,8 @@ function App() {
     if (!normalizedFilter) return;
 
     if (normalizedFilter === "ALL" || reviewPriorityOptions.some((item) => item.value === normalizedFilter)) {
-      setOpportunityPriorityFilter(normalizedFilter as OpportunityPriorityFilter);
+      setOpportunityPriorityFilters(normalizedFilter === "ALL" ? [] : [normalizedFilter as OpportunityPriorityFilter]);
+      setOpportunityStatusFilters([]);
       setOpportunityTagFilters([]);
       setOpportunityPage(0);
       return;
@@ -2531,7 +2670,8 @@ function App() {
     };
     const tagFilter = legacyTagFilterMap[normalizedFilter];
     if (tagFilter) {
-      setOpportunityPriorityFilter("ALL");
+      setOpportunityPriorityFilters([]);
+      setOpportunityStatusFilters([]);
       setOpportunityTagFilters([tagFilter]);
       setOpportunityPage(0);
     }
@@ -2741,7 +2881,8 @@ function App() {
           action: () => {
             if (toApplyCount > 0) {
               setOpportunityVisibility("ACTIVE");
-              setOpportunityPriorityFilter("P0");
+              setOpportunityPriorityFilters(["P0"]);
+              setOpportunityStatusFilters([]);
               setOpportunityTagFilters([]);
               setOpportunityPage(0);
               goTo("opportunities");
@@ -3308,28 +3449,46 @@ function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="filter-bar opportunity-filter-bar" aria-label="岗位筛选">
-                    {opportunityPriorityOptions.map((item) => (
-                      <button
-                        key={item.value}
-                        className={opportunityPriorityFilter === item.value ? "active-filter" : ""}
-                        aria-pressed={opportunityPriorityFilter === item.value}
-                        onClick={() => selectOpportunityPriorityFilter(item.value)}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                    <span className="opportunity-filter-separator" aria-hidden="true">|</span>
-                    {opportunityTagOptions.map((item) => (
-                      <button
-                        key={item.value}
-                        className={opportunityTagFilters.includes(item.value) ? "active-filter" : ""}
-                        aria-pressed={opportunityTagFilters.includes(item.value)}
-                        onClick={() => toggleOpportunityTagFilter(item.value)}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
+                  <div ref={opportunityFilterControlsRef} className="opportunity-filter-controls" aria-label="岗位筛选">
+                    <OpportunityCompanySelect
+                      value={opportunityCompanyFilter}
+                      options={opportunityCompanyOptions}
+                      open={openOpportunityFilter === "company"}
+                      onOpen={() => setOpenOpportunityFilter("company")}
+                      onChange={(value) => {
+                        setOpportunityCompanyFilter(value);
+                        setOpportunityPage(0);
+                      }}
+                      onSelect={(value) => {
+                        setOpportunityCompanyFilter(value);
+                        setOpenOpportunityFilter(null);
+                        setOpportunityPage(0);
+                      }}
+                    />
+                    <OpportunityMultiSelect
+                      label="优先级"
+                      options={opportunityPriorityOptions}
+                      selected={opportunityPriorityFilters}
+                      open={openOpportunityFilter === "priority"}
+                      onOpen={() => setOpenOpportunityFilter((current) => (current === "priority" ? null : "priority"))}
+                      onToggle={(value) => toggleOpportunityPriorityFilter(value as OpportunityPriorityFilter)}
+                    />
+                    <OpportunityMultiSelect
+                      label="状态"
+                      options={opportunityStatusOptions}
+                      selected={opportunityStatusFilters}
+                      open={openOpportunityFilter === "status"}
+                      onOpen={() => setOpenOpportunityFilter((current) => (current === "status" ? null : "status"))}
+                      onToggle={(value) => toggleOpportunityStatusFilter(value as OpportunityStatusFilter)}
+                    />
+                    <OpportunityMultiSelect
+                      label="标签"
+                      options={opportunityTagOptions}
+                      selected={opportunityTagFilters}
+                      open={openOpportunityFilter === "tags"}
+                      onOpen={() => setOpenOpportunityFilter((current) => (current === "tags" ? null : "tags"))}
+                      onToggle={(value) => toggleOpportunityTagFilter(value as OpportunityTagFilter)}
+                    />
                   </div>
                   {hasOpportunitySearchOrFilters ? (
                     <button type="button" className="ghost-button compact-button opportunity-clear-filters" onClick={clearOpportunitySearchAndFilters}>

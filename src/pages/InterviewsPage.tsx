@@ -225,8 +225,25 @@ export function InterviewsPage({
                   {(selectedInterview.sourceFiles ?? []).map((file) => {
                     const Icon = file.kind === "audio" ? FileAudio : FileText;
                     const canPreview = Boolean(file.content || file.storageUri);
+                    const openFile = () => {
+                      if (!canPreview) return;
+                      if (file.content) onPreviewSessionFile(file);
+                      else onOpenStoredFile(file.storageUri);
+                    };
                     return (
-                      <div className="source-item file-source" key={file.id}>
+                      <div
+                        className={`source-item source-button file-source ${canPreview ? "is-openable" : ""}`}
+                        key={file.id}
+                        role={canPreview ? "button" : undefined}
+                        tabIndex={canPreview ? 0 : undefined}
+                        onClick={openFile}
+                        onKeyDown={(event) => {
+                          if (canPreview && (event.key === "Enter" || event.key === " ")) {
+                            event.preventDefault();
+                            openFile();
+                          }
+                        }}
+                      >
                         <Icon size={18} />
                         <div>
                           <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
@@ -237,7 +254,7 @@ export function InterviewsPage({
                             {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
                           </small>
                         </div>
-                        <div className="source-file-actions">
+                        <div className="source-file-actions" onClick={(event) => event.stopPropagation()}>
                           <em>{file.uploadedAt}</em>
                           {canPreview ? (
                             <button className="ghost-button compact-button" onClick={() => (file.content ? onPreviewSessionFile(file) : onOpenStoredFile(file.storageUri))}>
