@@ -2827,6 +2827,27 @@ small {
   line-height: 1.45;
 }
 
+.source-file-actions {
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px !important;
+  white-space: nowrap;
+}
+
+.source-file-actions .compact-button {
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.source-file-delete {
+  color: var(--text-secondary);
+}
+
+.source-file-delete:hover {
+  color: var(--danger, #a54f3f);
+}
+
 .source-item svg {
   color: var(--text-secondary);
 }
@@ -3573,6 +3594,15 @@ small {
 
 .review-block textarea:focus {
   border-color: var(--border-visible);
+}
+
+.interview-answer-block textarea {
+  min-height: 180px;
+  line-height: 1.7;
+}
+
+.interview-polished-answer-block textarea {
+  min-height: 220px;
 }
 
 .compact-review-block textarea {

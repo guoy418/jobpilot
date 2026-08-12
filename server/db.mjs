@@ -1296,6 +1296,27 @@ export const createRepository = (db) => {
           updated_at = ?
       WHERE id = ?
     `).run(next.opportunityId || null, next.company, next.role, next.round, next.date, next.note || "", normalizeOpportunityAction(next.reviewPriority, "P1"), nowIso(), id);
+    if (Array.isArray(patch.sourceFiles)) {
+      db.prepare("DELETE FROM interview_source_files WHERE interview_session_id = ?").run(id);
+      const insertFile = db.prepare(`
+        INSERT INTO interview_source_files (
+          id, interview_session_id, kind, file_name, detail, uploaded_at, duration, content, storage_uri
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      patch.sourceFiles.forEach((file) =>
+        insertFile.run(
+          file.id || makeId("FILE"),
+          id,
+          file.kind || "transcript",
+          file.fileName?.trim() || "interview-notes.txt",
+          file.detail?.trim() || "闈㈣瘯鍘熷鏉愭枡",
+          file.uploadedAt?.trim() || "Now",
+          file.duration ?? null,
+          file.content ?? null,
+          file.storageUri ?? null,
+        ),
+      );
+    }
     return getInterview(id);
   };
 

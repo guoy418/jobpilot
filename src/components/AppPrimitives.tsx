@@ -108,16 +108,18 @@ export function ReviewBlock({
   value,
   readOnly,
   compact,
+  className,
   onChange,
 }: {
   label: string;
   value: string;
   readOnly?: boolean;
   compact?: boolean;
+  className?: string;
   onChange?: (value: string) => void;
 }) {
   return (
-    <label className={`review-block${compact ? " compact-review-block" : ""}`}>
+    <label className={`review-block${compact ? " compact-review-block" : ""}${className ? ` ${className}` : ""}`}>
       <span>{label}</span>
       <textarea readOnly={readOnly} value={value} onChange={(event) => onChange?.(event.target.value)} />
     </label>

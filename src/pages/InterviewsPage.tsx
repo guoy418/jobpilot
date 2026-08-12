@@ -8,8 +8,10 @@ import {
   FileText,
   Plus,
   RotateCcw,
+  Trash2,
   Upload,
 } from "lucide-react";
+import { useRef } from "react";
 import { EmptyState, ListPager, PageIntro, ReviewBlock, SectionTitle } from "../components/AppPrimitives";
 import { OpportunityCombobox } from "../components/OpportunityCombobox";
 import type { InterviewSession, Opportunity, OpportunityAction, QaPair, SessionFile } from "../types";
@@ -46,6 +48,8 @@ type InterviewsPageProps = {
   onRequestReparseSelectedInterview: () => void;
   onOpenStoredFile: (storageUri?: string) => void;
   onPreviewSessionFile: (file: SessionFile) => void;
+  onAddInterviewFile: (file: File) => void;
+  onDeleteInterviewFile: (fileId: string) => void;
   onAddQaPair: () => void;
   onOpenInterviewQuestion: (id: string) => void;
   onRequestDeleteInterview: () => void;
@@ -77,6 +81,8 @@ export function InterviewsPage({
   onRequestReparseSelectedInterview,
   onOpenStoredFile,
   onPreviewSessionFile,
+  onAddInterviewFile,
+  onDeleteInterviewFile,
   onAddQaPair,
   onOpenInterviewQuestion,
   onRequestDeleteInterview,
@@ -86,6 +92,8 @@ export function InterviewsPage({
   onUpdateSelectedQaWeak,
   onRequestDeleteQa,
 }: InterviewsPageProps) {
+  const sourceFileInputRef = useRef<HTMLInputElement>(null);
+
   return (
     <section className="interview-page">
       {interviewView === "list" ? (
@@ -192,6 +200,21 @@ export function InterviewsPage({
               <div className="source-panel compact-source">
                 <SectionTitle label="面试材料" title="这场面试的录音或文字稿" action={`${selectedInterview.sourceFiles?.length ?? 0} 份`} />
                 <div className="button-row source-panel-actions">
+                  <input
+                    ref={sourceFileInputRef}
+                    className="visually-hidden"
+                    type="file"
+                    accept=".txt,.md,.json,.pdf,.doc,.docx,.m4a,.mp3,.wav,.aac,.ogg"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) onAddInterviewFile(file);
+                      event.target.value = "";
+                    }}
+                  />
+                  <button className="secondary-button compact-button" onClick={() => sourceFileInputRef.current?.click()}>
+                    <Upload size={14} />
+                    <span>上传材料</span>
+                  </button>
                   <button className="secondary-button compact-button" disabled={interviewReparseBusy} onClick={onRequestReparseSelectedInterview}>
                     <RotateCcw size={14} />
                     <span>{interviewReparseBusy ? "整理中..." : "重新整理问题"}</span>
@@ -203,7 +226,7 @@ export function InterviewsPage({
                     const Icon = file.kind === "audio" ? FileAudio : FileText;
                     const canPreview = Boolean(file.content || file.storageUri);
                     return (
-                      <button className="source-item source-button file-source" key={file.id} disabled={!canPreview} onClick={() => (file.content ? onPreviewSessionFile(file) : onOpenStoredFile(file.storageUri))}>
+                      <div className="source-item file-source" key={file.id}>
                         <Icon size={18} />
                         <div>
                           <span>{file.kind === "audio" ? "原录音" : "文字稿"}</span>
@@ -214,8 +237,18 @@ export function InterviewsPage({
                             {file.content ? " / 可预览文字" : file.storageUri ? " / 已存储，可打开" : " / 未存储原文件"}
                           </small>
                         </div>
-                        <em>{file.uploadedAt}</em>
-                      </button>
+                        <div className="source-file-actions">
+                          <em>{file.uploadedAt}</em>
+                          {canPreview ? (
+                            <button className="ghost-button compact-button" onClick={() => (file.content ? onPreviewSessionFile(file) : onOpenStoredFile(file.storageUri))}>
+                              打开
+                            </button>
+                          ) : null}
+                          <button className="ghost-button compact-button source-file-delete" onClick={() => onDeleteInterviewFile(file.id)} aria-label={`删除${file.fileName}`}>
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -262,10 +295,10 @@ export function InterviewsPage({
               </div>
 
               <ReviewBlock label="面试问题" value={selectedQa.question} onChange={(value) => onUpdateSelectedQa("question", value)} />
-              <ReviewBlock label="我的原回答" value={selectedQa.originalAnswer} onChange={(value) => onUpdateSelectedQa("originalAnswer", value)} />
+              <ReviewBlock className="interview-answer-block" label="我的原回答" value={selectedQa.originalAnswer} onChange={(value) => onUpdateSelectedQa("originalAnswer", value)} />
               <ReviewBlock label="复盘建议" value={selectedQa.critique} onChange={(value) => onUpdateSelectedQa("critique", value)} />
-              <ReviewBlock label="推荐回答框架" value={selectedQa.framework} onChange={(value) => onUpdateSelectedQa("framework", value)} />
-              <ReviewBlock label="具体优化回答" value={selectedQa.optimizedAnswer} onChange={(value) => onUpdateSelectedQa("optimizedAnswer", value)} />
+              <ReviewBlock className="interview-answer-block" label="推荐回答框架" value={selectedQa.framework} onChange={(value) => onUpdateSelectedQa("framework", value)} />
+              <ReviewBlock className="interview-answer-block interview-polished-answer-block" label="具体优化回答" value={selectedQa.optimizedAnswer} onChange={(value) => onUpdateSelectedQa("optimizedAnswer", value)} />
 
               <div className="button-row">
                 <button className="primary-button" onClick={onCreateAnswerCard}>

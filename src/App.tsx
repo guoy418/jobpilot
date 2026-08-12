@@ -58,7 +58,7 @@ import { useThemePreference } from "./hooks/useThemePreference";
 import { useWeeklyPlanController } from "./hooks/useWeeklyPlanController";
 import { AnswersPage, type AnswerCategoryEditorState, type AnswerUpdateField } from "./pages/AnswersPage";
 import { InterviewsPage, type InterviewView, type QaUpdateField } from "./pages/InterviewsPage";
-import { isGarbledTextContent } from "./textEncoding";
+import { isGarbledTextContent, readTextFile } from "./textEncoding";
 import {
   computeOpportunityAction,
   createSubmittedTransitionEvent,
@@ -119,6 +119,7 @@ import {
   updateOpportunityApi,
   updateQaPairApi,
   updateResumeVersionApi,
+  uploadFileApi,
 } from "./apiClient";
 import { apiBaseUrl, isApiEnabled, isPublicDemo } from "./appConfig";
 import { baseAnswerCards, baseAnswerCategories, baseWeeklyPlan, resumeVersions, seedInterviewSessions, seedOpportunities, uncategorizedAnswerCategoryId } from "./mockData";
@@ -1566,6 +1567,45 @@ function App() {
 
   const syncUpdatedInterviewSession = (id: string, patch: Partial<InterviewSession>) => {
     void updateInterviewSessionApi(id, patch).catch(() => setSystemMessage("面试复盘已保存在本机"));
+  };
+
+  const addInterviewFile = async (file: File) => {
+    const session = interviewSessions.find((item) => item.id === selectedInterviewId);
+    if (!session) return;
+    const isAudio = /\.(m4a|mp3|wav|aac|ogg)$/i.test(file.name);
+    let content: string | undefined;
+    if (!isAudio && /\.(txt|md|json)$/i.test(file.name)) {
+      const decoded = await readTextFile(file);
+      if (!decoded.garbled) content = decoded.text;
+    }
+    try {
+      const storedFile = isApiEnabled ? await uploadFileApi(file) : undefined;
+      const nextFile: SessionFile = {
+        id: makeId("FILE"),
+        kind: isAudio ? "audio" : "transcript",
+        fileName: file.name,
+        detail: isAudio ? "追加上传的面试录音" : "追加上传的面试文字稿",
+        uploadedAt: formatNow(),
+        duration: isAudio ? "待识别" : undefined,
+        storageUri: storedFile?.storageUri,
+        content,
+      };
+      const sourceFiles = [...(session.sourceFiles ?? []), nextFile];
+      setInterviewSessions((sessions) => sessions.map((item) => (item.id === session.id ? { ...item, sourceFiles } : item)));
+      syncUpdatedInterviewSession(session.id, { sourceFiles });
+      setSystemMessage("面试材料已添加");
+    } catch {
+      setSystemMessage("材料上传失败，请重试");
+    }
+  };
+
+  const deleteInterviewFile = (fileId: string) => {
+    const session = interviewSessions.find((item) => item.id === selectedInterviewId);
+    if (!session) return;
+    const sourceFiles = (session.sourceFiles ?? []).filter((file) => file.id !== fileId);
+    setInterviewSessions((sessions) => sessions.map((item) => (item.id === session.id ? { ...item, sourceFiles } : item)));
+    syncUpdatedInterviewSession(session.id, { sourceFiles });
+    setSystemMessage("面试材料已删除");
   };
 
   const syncCreatedQaPair = (interviewId: string, qaPair: QaPair) => {
@@ -3642,6 +3682,8 @@ function App() {
             onRequestReparseSelectedInterview={requestReparseSelectedInterview}
             onOpenStoredFile={openStoredFile}
             onPreviewSessionFile={setPreviewSessionFile}
+            onAddInterviewFile={(file) => void addInterviewFile(file)}
+            onDeleteInterviewFile={deleteInterviewFile}
             onAddQaPair={addQaPair}
             onOpenInterviewQuestion={openInterviewQuestion}
             onRequestDeleteInterview={() =>
