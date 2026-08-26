@@ -2856,6 +2856,47 @@ small {
   color: var(--text-secondary);
 }
 
+.opportunity-source-row {
+  cursor: pointer;
+}
+
+.opportunity-source-actions,
+.opportunity-source-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.opportunity-source-actions .compact-button,
+.opportunity-source-edit-actions .compact-button {
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.opportunity-source-edit-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.opportunity-source-edit-content input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-visible);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.opportunity-source-edit-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
 .jd-brief {
   display: grid;
   gap: 8px;

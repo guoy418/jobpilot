@@ -272,6 +272,18 @@ const opportunityTagOptions: Array<{ value: OpportunityTagFilter; label: string 
 
 type OpportunityFilterMenu = "priority" | "status" | "company" | "title" | "tags" | null;
 
+type OpportunityListSnapshot = {
+  query: string;
+  viewMode: ViewMode;
+  opportunityPage: number;
+  opportunityVisibility: OpportunityVisibilityFilter;
+  opportunityPriorityFilters: OpportunityPriorityFilter[];
+  opportunityStatusFilters: OpportunityStatusFilter[];
+  opportunityTagFilters: OpportunityTagFilter[];
+  opportunityCompanyFilter: string;
+  opportunityTitleFilter: string;
+};
+
 function OpportunityMultiSelect({
   label,
   options,
@@ -502,6 +514,7 @@ function App() {
   const [expandedTodaySources, setExpandedTodaySources] = useState<Partial<Record<TodayAction["source"], boolean>>>({});
   const [opportunities, setOpportunities] = useState<Opportunity[]>(seedOpportunities);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(seedOpportunities[0].id);
+  const [opportunityListSnapshot, setOpportunityListSnapshot] = useState<OpportunityListSnapshot | null>(null);
   const [opportunityHistoryDrafts, setOpportunityHistoryDrafts] = useState<Record<string, string>>({});
   const [interviewSessions, setInterviewSessions] = useState(seedInterviewSessions);
   const [selectedInterviewId, setSelectedInterviewId] = useState(seedInterviewSessions[0].id);
@@ -520,6 +533,8 @@ function App() {
   const [opportunityCompanyFilter, setOpportunityCompanyFilter] = useState("");
   const [opportunityTitleFilter, setOpportunityTitleFilter] = useState("");
   const [openOpportunityFilter, setOpenOpportunityFilter] = useState<OpportunityFilterMenu>(null);
+  const [editingOpportunitySourceAssetId, setEditingOpportunitySourceAssetId] = useState("");
+  const [opportunitySourceAssetDraft, setOpportunitySourceAssetDraft] = useState("");
   const [systemMessage, setSystemMessage] = useState("准备好了");
   const [answerCards, setAnswerCards] = useState<AnswerCard[]>(baseAnswerCards);
   const [answerCategories, setAnswerCategories] = useState<AnswerCategory[]>(baseAnswerCategories);
@@ -954,6 +969,9 @@ function App() {
   const visibleOpportunitySourceAssets = selectedOpportunity
     ? selectedOpportunity.sourceAssets.filter((asset) => asset.kind === "job-link" || asset.kind === "screenshot" || Boolean(asset.storageUri))
     : [];
+  const livePreviewAsset = previewAsset
+    ? opportunities.flatMap((opportunity) => opportunity.sourceAssets).find((asset) => asset.id === previewAsset.id) ?? previewAsset
+    : null;
 
   const resetListNavigation = () => {
     setInterviewPage(0);
@@ -1319,9 +1337,43 @@ function App() {
   };
 
   const openOpportunity = (id: string) => {
+    if (page === "opportunities") {
+      setOpportunityListSnapshot({
+        query,
+        viewMode,
+        opportunityPage,
+        opportunityVisibility,
+        opportunityPriorityFilters: [...opportunityPriorityFilters],
+        opportunityStatusFilters: [...opportunityStatusFilters],
+        opportunityTagFilters: [...opportunityTagFilters],
+        opportunityCompanyFilter,
+        opportunityTitleFilter,
+      });
+    }
     setSelectedOpportunityId(id);
     setPage("opportunityDetail");
     setSystemMessage("已打开岗位详情");
+  };
+
+  const returnToOpportunityList = () => {
+    const snapshot = opportunityListSnapshot;
+    if (snapshot) {
+      setQuery(snapshot.query);
+      setViewMode(snapshot.viewMode);
+      setOpportunityPage(snapshot.opportunityPage);
+      setOpportunityVisibility(snapshot.opportunityVisibility);
+      setOpportunityPriorityFilters(snapshot.opportunityPriorityFilters);
+      setOpportunityStatusFilters(snapshot.opportunityStatusFilters);
+      setOpportunityTagFilters(snapshot.opportunityTagFilters);
+      setOpportunityCompanyFilter(snapshot.opportunityCompanyFilter);
+      setOpportunityTitleFilter(snapshot.opportunityTitleFilter);
+      setOpenOpportunityFilter(null);
+      setOpportunityListSnapshot(null);
+      setPage("opportunities");
+      setSystemMessage("已返回岗位推进");
+      return;
+    }
+    goTo("opportunities");
   };
 
   const selectInterview = (id: string) => {
@@ -1426,6 +1478,34 @@ function App() {
     setOpportunities((items) => items.map((item) => (item.id === selectedOpportunity.id ? { ...item, ...nextPatch } : item)));
     invalidateApiInsights();
     syncUpdatedOpportunity(selectedOpportunity.id, nextPatch);
+  };
+
+  const startEditingOpportunitySourceAsset = (asset: SourceAsset) => {
+    setEditingOpportunitySourceAssetId(asset.id);
+    setOpportunitySourceAssetDraft(asset.content ?? "");
+  };
+
+  const cancelEditingOpportunitySourceAsset = () => {
+    setEditingOpportunitySourceAssetId("");
+    setOpportunitySourceAssetDraft("");
+  };
+
+  const saveOpportunitySourceAsset = (asset: SourceAsset) => {
+    const content = opportunitySourceAssetDraft.trim();
+    if (!content) {
+      setSystemMessage("原始链接不能为空");
+      return;
+    }
+    const updatedAsset = { ...asset, content, detail: content };
+    const sourceAssets = selectedOpportunity.sourceAssets.map((item) => (item.id === asset.id ? updatedAsset : item));
+    if (sourceAssets.every((item) => item.id !== asset.id)) {
+      setSystemMessage("原始链接材料不存在，请刷新后重试");
+      return;
+    }
+    updateSelectedOpportunity({ sourceAssets });
+    setPreviewAsset((current) => (current?.id === asset.id ? updatedAsset : current));
+    cancelEditingOpportunitySourceAsset();
+    setSystemMessage("原始链接已更新");
   };
 
   const replaceInterviewQaPairs = (sessionId: string, previousPairs: QaPair[], nextPairs: Array<Omit<QaPair, "id">>) => {
@@ -1803,7 +1883,14 @@ function App() {
       return;
     }
     void updateOpportunityApi(id, patch)
-      .then(refreshApiInsights)
+      .then((savedOpportunity) => {
+        setOpportunities((items) => items.map((item) => (item.id === id ? savedOpportunity : item)));
+        setPreviewAsset((current) => {
+          if (!current) return current;
+          return savedOpportunity.sourceAssets.find((asset) => asset.id === current.id) ?? current;
+        });
+        refreshApiInsights();
+      })
       .catch(() => setSystemMessage("岗位已保存在本机"));
   };
 
@@ -3618,7 +3705,7 @@ function App() {
         {page === "opportunityDetail" && (
           <section className="split-page opportunity-detail-page">
             <div className="surface">
-              <button className="ghost-button back-button" onClick={() => goTo("opportunities")}>
+              <button className="ghost-button back-button" onClick={returnToOpportunityList}>
                 <ChevronLeft size={16} />
                 <span>返回岗位推进</span>
               </button>
@@ -3634,16 +3721,55 @@ function App() {
                   {visibleOpportunitySourceAssets.length === 0 ? (
                     <p className="empty-list-note">暂无招聘链接或上传文件。</p>
                   ) : (
-                    visibleOpportunitySourceAssets.map((asset) => (
-                      <button className="source-item source-button" key={asset.id} onClick={() => setPreviewAsset(asset)}>
-                        <div>
-                          <span>{sourceKindLabel[asset.kind]}</span>
-                          <strong>{asset.title}</strong>
-                          <small>{asset.detail}</small>
+                    visibleOpportunitySourceAssets.map((asset) => {
+                      const editing = editingOpportunitySourceAssetId === asset.id;
+                      if (editing) {
+                        return (
+                          <div className="source-item opportunity-source-edit-row" key={asset.id}>
+                            <div className="opportunity-source-edit-content">
+                              <span>{sourceKindLabel[asset.kind]}</span>
+                              <input
+                                autoFocus
+                                value={opportunitySourceAssetDraft}
+                                onChange={(event) => setOpportunitySourceAssetDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") saveOpportunitySourceAsset(asset);
+                                  if (event.key === "Escape") cancelEditingOpportunitySourceAsset();
+                                }}
+                                aria-label="编辑原始链接"
+                              />
+                            </div>
+                            <div className="opportunity-source-edit-actions">
+                              <button className="secondary-button compact-button" onClick={() => saveOpportunitySourceAsset(asset)}>保存</button>
+                              <button className="ghost-button compact-button" onClick={cancelEditingOpportunitySourceAsset}>取消</button>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="source-item source-button opportunity-source-row" key={asset.id} role="button" tabIndex={0} onClick={() => setPreviewAsset(asset)} onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setPreviewAsset(asset);
+                          }
+                        }}>
+                          <div>
+                            <span>{sourceKindLabel[asset.kind]}</span>
+                            <strong>{asset.title}</strong>
+                            {asset.kind !== "job-link" ? <small>{asset.detail}</small> : null}
+                          </div>
+                          <div className="opportunity-source-actions">
+                            <em>{asset.createdAt}</em>
+                            {asset.kind === "job-link" ? (
+                              <button className="ghost-button compact-button" onClick={(event) => {
+                                event.stopPropagation();
+                                startEditingOpportunitySourceAsset(asset);
+                              }}>编辑</button>
+                            ) : null}
+                          </div>
                         </div>
-                        <em>{asset.createdAt}</em>
-                      </button>
-                    ))
+                      );
+                    })
                   )}
                 </div>
                 <div className="jd-brief">
@@ -4168,9 +4294,9 @@ function App() {
           />
         )}
 
-        {previewAsset && (
+        {livePreviewAsset && (
           <AssetPreviewDialog
-            asset={previewAsset}
+            asset={livePreviewAsset}
             onClose={() => setPreviewAsset(null)}
             onBackdropMouseDown={markModalBackdropPointerStart}
             onBackdropClick={(event) => closeModalFromBackdropClick(event, () => setPreviewAsset(null))}

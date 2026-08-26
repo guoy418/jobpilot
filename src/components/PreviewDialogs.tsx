@@ -33,7 +33,7 @@ export function AssetPreviewDialog({
           <X size={16} />
         </button>
         <SectionTitle titleId="asset-preview-title" label={sourceKindLabel[asset.kind]} title={asset.title} action={asset.createdAt} />
-        <p>{asset.detail}</p>
+        {asset.kind !== "job-link" ? <p>{asset.detail}</p> : null}
         <textarea readOnly value={asset.content || "当前原材料只有元信息。若该材料来自文件上传，可以点击下方打开原文件。"} />
         <div className="button-row">
           {asset.storageUri && (
