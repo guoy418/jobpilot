@@ -1883,14 +1883,7 @@ function App() {
       return;
     }
     void updateOpportunityApi(id, patch)
-      .then((savedOpportunity) => {
-        setOpportunities((items) => items.map((item) => (item.id === id ? savedOpportunity : item)));
-        setPreviewAsset((current) => {
-          if (!current) return current;
-          return savedOpportunity.sourceAssets.find((asset) => asset.id === current.id) ?? current;
-        });
-        refreshApiInsights();
-      })
+      .then(refreshApiInsights)
       .catch(() => setSystemMessage("岗位已保存在本机"));
   };
 
